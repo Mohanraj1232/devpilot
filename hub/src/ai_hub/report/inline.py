@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import re
+
 from ai_hub.models import SEVERITY_ORDER, Finding, Severity
+from ai_hub.safety.redact import redact
+from ai_hub.safety.untrusted import neutralize_mentions
+
+_FP_MARKER = "<!-- ai-hub:fp:{fp} -->"
+_FP_PATTERN = re.compile(r"<!-- ai-hub:fp:([0-9a-f]{8,64}) -->")
+
+
+def fingerprints_in(comment_bodies: list[str]) -> set[str]:
+    """Fingerprints already posted by earlier runs (so a re-run does not repeat a comment)."""
+    found: set[str] = set()
+    for body in comment_bodies:
+        found.update(_FP_PATTERN.findall(body or ""))
+    return found
+
+
+def _clean(text: str) -> str:
+    return neutralize_mentions(redact(text or "")).replace("```", "'''")
 
 
 def build_inline_comments(
@@ -28,7 +47,10 @@ def build_inline_comments(
     eligible = [
         f
         for f in findings
-        if SEVERITY_ORDER.get(f.severity, 0) >= min_order and f.fingerprint not in existing
+        # Inline comments must anchor to a real line.
+        if f.line_start > 0
+        and SEVERITY_ORDER.get(f.severity, 0) >= min_order
+        and f.fingerprint not in existing
     ]
 
     sorted_findings = sorted(
@@ -37,17 +59,20 @@ def build_inline_comments(
 
     comments: list[dict[str, object]] = []
     for f in sorted_findings:
-        body = f"**{f.severity.value.upper()}** — {f.title}\n\n{f.explanation}"
+        body = f"**{f.severity.value.upper()}** — {_clean(f.title)}\n\n{_clean(f.explanation)}"
         if f.suggested_fix:
-            body += f"\n\n**Suggested fix:**\n```\n{f.suggested_fix}\n```"
+            body += f"\n\n**Suggested fix:**\n```\n{_clean(f.suggested_fix)}\n```"
+        body += f"\n\n{_FP_MARKER.format(fp=f.fingerprint)}"
 
         comment: dict[str, object] = {
             "path": f.file,
             "line": f.line_start,
+            "side": "RIGHT",
             "body": body,
         }
-        if f.line_end and f.line_end != f.line_start:
+        if f.line_end and f.line_end > f.line_start:
             comment["start_line"] = f.line_start
+            comment["start_side"] = "RIGHT"
             comment["line"] = f.line_end
 
         comments.append(comment)

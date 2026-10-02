@@ -187,3 +187,96 @@ class TestLoadConfig:
         _, v1 = load_config(cfg)
         _, v2 = load_config(cfg)
         assert v1 == v2
+
+
+class TestStricterValidation:
+    """Invalid configuration must be rejected, not silently replaced by a default."""
+
+    def _load(self, tmp_path, text):
+        from ai_hub.config.loader import load_config
+
+        cfg = tmp_path / "config.yml"
+        cfg.write_text(text)
+        return load_config(cfg)
+
+    def test_unknown_static_tool_is_rejected(self, tmp_path) -> None:
+        import pytest
+
+        from ai_hub.errors import ConfigError
+
+        with pytest.raises(ConfigError):
+            self._load(tmp_path, "static_analysis:\n  tools: [ruff, pylint]\n")
+
+    def test_unknown_security_tool_is_rejected(self, tmp_path) -> None:
+        import pytest
+
+        from ai_hub.errors import ConfigError
+
+        with pytest.raises(ConfigError):
+            self._load(tmp_path, "security:\n  tools: [snyk]\n")
+
+    def test_known_tools_and_dedupe(self, tmp_path) -> None:
+        config, _ = self._load(tmp_path, "security:\n  tools: [gitleaks, bandit, deps, gitleaks]\n")
+        assert config.security.tools == ["gitleaks", "bandit", "deps"]
+
+    def test_invalid_inline_severity_is_rejected(self, tmp_path) -> None:
+        import pytest
+
+        from ai_hub.errors import ConfigError
+
+        with pytest.raises(ConfigError):
+            self._load(tmp_path, "ai_review:\n  inline_min_severity: urgent\n")
+
+    def test_unknown_required_check_is_rejected(self, tmp_path) -> None:
+        import pytest
+
+        from ai_hub.errors import ConfigError
+
+        with pytest.raises(ConfigError):
+            self._load(tmp_path, "quality_gate:\n  required_checks: [static, lint]\n")
+
+    def test_tests_is_a_valid_required_check(self, tmp_path) -> None:
+        config, _ = self._load(tmp_path, "quality_gate:\n  required_checks: [tests, static]\n")
+        assert "tests" in config.quality_gate.required_checks
+
+    def test_coverage_report_must_stay_inside_the_repo(self, tmp_path) -> None:
+        import pytest
+
+        from ai_hub.errors import ConfigError
+
+        for bad in ("/etc/passwd", "../outside.xml", "C:/x.xml", "a/../../b.xml"):
+            with pytest.raises(ConfigError):
+                self._load(tmp_path, f'tests:\n  coverage_report: "{bad}"\n')
+
+    def test_relative_coverage_report_is_fine(self, tmp_path) -> None:
+        config, _ = self._load(tmp_path, "tests:\n  coverage_report: reports/coverage.xml\n")
+        assert config.tests.coverage_report == "reports/coverage.xml"
+
+
+class TestEmptyConfigFile:
+    def test_empty_file_means_defaults(self, tmp_path) -> None:
+        from ai_hub.config.loader import load_config
+
+        cfg = tmp_path / "config.yml"
+        cfg.write_text("")
+        config, _ = load_config(cfg)
+        assert config.quality_gate.enabled is True
+
+    def test_comment_only_file_means_defaults(self, tmp_path) -> None:
+        from ai_hub.config.loader import load_config
+
+        cfg = tmp_path / "config.yml"
+        cfg.write_text("# nothing configured yet\n")
+        config, _ = load_config(cfg)
+        assert config.version == 1
+
+    def test_a_list_is_still_rejected(self, tmp_path) -> None:
+        import pytest
+
+        from ai_hub.config.loader import load_config
+        from ai_hub.errors import ConfigError
+
+        cfg = tmp_path / "config.yml"
+        cfg.write_text("- a\n- b\n")
+        with pytest.raises(ConfigError):
+            load_config(cfg)

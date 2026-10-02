@@ -280,3 +280,63 @@ class GitHubClient:
             )
         )
         return data
+
+    # ── pull request review output ────────────────────────────
+
+    def _paginate(self, path: str, *, max_pages: int = 10) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            response = self._request("GET", path, params={"per_page": 100, "page": page})
+            batch: list[dict[str, Any]] = self._json(response)
+            items.extend(batch)
+            if len(batch) < 100:
+                break
+        return items
+
+    def list_issue_comments(self, number: int) -> list[dict[str, Any]]:
+        return self._paginate(f"/repos/{self.repo}/issues/{number}/comments")
+
+    def create_issue_comment(self, number: int, body: str) -> dict[str, Any]:
+        data: dict[str, Any] = self._json(
+            self._request(
+                "POST", f"/repos/{self.repo}/issues/{number}/comments", json={"body": body[:60000]}
+            )
+        )
+        return data
+
+    def update_issue_comment(self, comment_id: int, body: str) -> dict[str, Any]:
+        data: dict[str, Any] = self._json(
+            self._request(
+                "PATCH",
+                f"/repos/{self.repo}/issues/comments/{comment_id}",
+                json={"body": body[:60000]},
+            )
+        )
+        return data
+
+    def list_review_comments(self, number: int) -> list[dict[str, Any]]:
+        return self._paginate(f"/repos/{self.repo}/pulls/{number}/comments")
+
+    def create_review(
+        self, number: int, *, commit_id: str, body: str, comments: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Post one review (event COMMENT: never approves or requests changes)."""
+        data: dict[str, Any] = self._json(
+            self._request(
+                "POST",
+                f"/repos/{self.repo}/pulls/{number}/reviews",
+                json={
+                    "commit_id": commit_id,
+                    "body": body[:60000],
+                    "event": "COMMENT",
+                    "comments": comments,
+                },
+            )
+        )
+        return data
+
+    def create_check_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data: dict[str, Any] = self._json(
+            self._request("POST", f"/repos/{self.repo}/check-runs", json=payload)
+        )
+        return data

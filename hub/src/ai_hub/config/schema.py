@@ -5,7 +5,19 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+STATIC_TOOLS = ("ruff", "eslint", "semgrep")
+SECURITY_TOOLS = ("semgrep", "gitleaks", "bandit", "deps")
+SEVERITIES = ("info", "low", "medium", "high", "critical")
+CHECK_NAMES = ("static", "security", "tests", "ai_review")
+
+
+def _validate_tools(value: list[str], allowed: tuple[str, ...]) -> list[str]:
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise ValueError(f"unknown tool(s) {unknown}; allowed: {list(allowed)}")
+    return list(dict.fromkeys(value))
 
 
 class ReviewMode(StrEnum):
@@ -24,21 +36,54 @@ class AIReviewConfig(BaseModel, extra="forbid"):
     max_files: Annotated[int, Field(ge=1, le=200)] = 50
     inline_min_severity: str = "medium"
 
+    @field_validator("inline_min_severity")
+    @classmethod
+    def _known_severity(cls, value: str) -> str:
+        if value not in SEVERITIES:
+            raise ValueError(f"must be one of {list(SEVERITIES)}")
+        return value
+
 
 class StaticAnalysisConfig(BaseModel, extra="forbid"):
     enabled: bool = True
     tools: list[str] = Field(default_factory=lambda: ["ruff", "semgrep"])
+
+    @field_validator("tools")
+    @classmethod
+    def _known_tools(cls, value: list[str]) -> list[str]:
+        return _validate_tools(value, STATIC_TOOLS)
 
 
 class SecurityConfig(BaseModel, extra="forbid"):
     enabled: bool = True
     tools: list[str] = Field(default_factory=lambda: ["semgrep", "gitleaks", "deps"])
 
+    @field_validator("tools")
+    @classmethod
+    def _known_tools(cls, value: list[str]) -> list[str]:
+        return _validate_tools(value, SECURITY_TOOLS)
+
 
 class TestsConfig(BaseModel, extra="forbid"):
+    __test__ = False  # not a pytest class
+
     command: str | None = None
     coverage_report: str | None = None
     timeout_minutes: Annotated[int, Field(ge=1, le=60)] = 15
+
+    @field_validator("coverage_report")
+    @classmethod
+    def _inside_workspace(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.replace("\\", "/")
+        if (
+            normalized.startswith("/")
+            or ":" in normalized.split("/")[0]
+            or ".." in normalized.split("/")
+        ):
+            raise ValueError("must be a relative path inside the repository")
+        return value
 
 
 class FailOnConfig(BaseModel, extra="forbid"):
@@ -52,6 +97,14 @@ class QualityGateConfig(BaseModel, extra="forbid"):
     fail_on: FailOnConfig = Field(default_factory=FailOnConfig)
     require_tests_pass: bool = True
     required_checks: list[str] = Field(default_factory=lambda: ["static", "security", "ai_review"])
+
+    @field_validator("required_checks")
+    @classmethod
+    def _known_checks(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(CHECK_NAMES))
+        if unknown:
+            raise ValueError(f"unknown check(s) {unknown}; allowed: {list(CHECK_NAMES)}")
+        return list(dict.fromkeys(value))
 
 
 class DevPilotConfig(BaseModel, extra="forbid"):

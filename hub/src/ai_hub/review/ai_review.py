@@ -13,6 +13,7 @@ from ai_hub.models import (
     Finding,
     FindingSource,
 )
+from ai_hub.safety.untrusted import wrap_untrusted
 
 if TYPE_CHECKING:
     from ai_hub.analysis.diff import FileDiff
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
     from ai_hub.llm.bedrock import BedrockClient
 
 logger = logging.getLogger("ai_hub.review")
+
+_MAX_CHUNK_CHARS = 140_000
 
 _REVIEW_PROMPT_PATH = "ai_hub/llm/prompts/review.md"
 
@@ -83,10 +86,16 @@ def run_ai_review(
     for i, chunk in enumerate(chunks):
         logger.info("Reviewing chunk %d/%d", i + 1, len(chunks))
 
+        # The diff is attacker-influenced (it is the PR author's code): delimit it as data.
         messages = [
             {
                 "role": "user",
-                "content": [{"text": f"Review the following code changes:\n\n{chunk}"}],
+                "content": [
+                    {
+                        "text": "Review the following code changes:\n\n"
+                        + wrap_untrusted("untrusted_diff", chunk, max_chars=_MAX_CHUNK_CHARS)
+                    }
+                ],
             }
         ]
 
@@ -102,14 +111,21 @@ def run_ai_review(
                 all_findings.append(_ai_finding_to_finding(af))
 
         except LLMError as exc:
-            if exc.reason == FailureReason.INVALID_RESPONSE:
-                logger.error("AI review chunk %d failed validation: %s", i + 1, exc.message)
-                return all_findings, CheckResult(
-                    name="ai_review",
-                    status=CheckStatus.ERROR,
-                    summary=f"AI review failed: {exc.message}",
-                )
-            raise
+            # Whatever the cause (invalid output, model/Bedrock unavailable, auth), the review
+            # did not complete: report an ERROR so a required ai_review check fails the gate
+            # instead of crashing the job or looking clean.
+            logger.error("AI review chunk %d failed: %s", i + 1, exc.message)
+            what = (
+                "invalid model output"
+                if exc.reason == FailureReason.INVALID_RESPONSE
+                else f"AI service unavailable ({exc.reason.value})"
+            )
+            return all_findings, CheckResult(
+                name="ai_review",
+                status=CheckStatus.ERROR,
+                summary=f"AI review failed: {what}",
+                details={"chunks_reviewed": i, "chunks_total": len(chunks)},
+            )
 
     status = CheckStatus.FAILED if all_findings else CheckStatus.SUCCESS
     return all_findings, CheckResult(

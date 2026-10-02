@@ -46,10 +46,13 @@ def load_config(
                 details={"path": str(config_path)},
             )
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 repo_config = yaml.safe_load(f)
         except yaml.YAMLError as exc:
             raise ConfigError(f"Invalid YAML in config file: {exc}") from exc
+
+        if repo_config is None:  # an empty (or comment-only) file means "all defaults"
+            repo_config = {}
 
         if not isinstance(repo_config, dict):
             raise ConfigError("Config file must be a YAML mapping")
