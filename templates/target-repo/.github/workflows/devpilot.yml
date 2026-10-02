@@ -11,4 +11,4 @@ jobs:
     secrets:
       DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
     with:
-      config_path: .ai-review/config.yml
+      issue_number: ${{ github.event.issue.number }}
