@@ -1,0 +1,101 @@
+name: DevPilot Agent
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: "Issue number that triggered the run"
+        required: true
+        type: number
+      config_path:
+        description: "Path to .ai-review/config.yml"
+        required: false
+        type: string
+        default: ".ai-review/config.yml"
+    secrets:
+      DEVPILOT_BOT_TOKEN:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  trigger-guard:
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.guard.outputs.allowed }}
+      execution_id: ${{ steps.guard.outputs.execution_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: v1
+          path: .ai-hub
+          sparse-checkout: hub
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ai-hub
+        run: pip install .ai-hub/hub
+
+      - name: Run trigger guard
+        id: guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+        run: |
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+          echo "execution_id=$(python -c 'import uuid; print(uuid.uuid4().hex[:16])')" >> "$GITHUB_OUTPUT"
+
+  agent:
+    needs: trigger-guard
+    if: needs.trigger-guard.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXECUTION_ID: ${{ needs.trigger-guard.outputs.execution_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: v1
+          path: .ai-hub
+          sparse-checkout: hub
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ai-hub
+        run: pip install .ai-hub/hub
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run DevPilot agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: echo "DevPilot agent placeholder — tool-use loop, tests, guardrails, push, PR"
+
+  post-status:
+    needs: [trigger-guard, agent]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report execution status
+        env:
+          GITHUB_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+        run: echo "Post execution status to issue and dashboard"
