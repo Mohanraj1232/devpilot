@@ -71,13 +71,20 @@ jobs:
           # Leave the workspace exactly as checked out; DevPilot refuses a dirty tree.
           rm -rf .ai-hub
 
-      - name: Install Gitleaks (optional; a built-in scanner is used if this fails)
-        continue-on-error: true
+      # Pinned release with a verified checksum (from the release's checksums.txt). The run
+      # fails here rather than falling back to a weaker secret scan.
+      - name: Install Gitleaks
         run: |
           version=8.18.4
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP" gitleaks
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          sha256=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          gitleaks version
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -94,6 +101,7 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
+          DEVPILOT_REQUIRE_GITLEAKS: "true"
         run: |
           "$RUNNER_TEMP/hub-venv/bin/ai-hub" devpilot \
             --repo "$GITHUB_REPOSITORY" \

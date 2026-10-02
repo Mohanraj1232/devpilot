@@ -6,6 +6,7 @@ These use real subprocesses and real git repositories (no mocks of subprocess).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from ai_hub.devpilot import git_ops
-from ai_hub.devpilot.secret_scan import scan_builtin, scan_diff_text
+from ai_hub.devpilot.secret_scan import _run_gitleaks, scan_builtin, scan_diff_text
 from ai_hub.devpilot.tester import run_test_repair_loop, run_tests
 from ai_hub.devpilot.workspace import (
     InstallResult,
@@ -475,3 +476,29 @@ class TestGitOps:
 
     def test_make_branch_name_with_empty_slug(self) -> None:
         assert git_ops.make_branch_name(5, "!!!") == "devpilot/issue-5"
+
+
+# ── real Gitleaks (skipped when the binary is not installed) ──
+
+
+@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks is not installed")
+class TestRealGitleaks:
+    # Assembled at runtime so no secret-looking literal lives in the repository.
+    TOKEN = "ghp_" + "x9Kq2LmZ8Vb3NcT7yHwP4dR6sFgJ1aEuB0oX"
+
+    def test_detects_a_secret_in_a_diff(self, repo: Path) -> None:
+        diff = _diff(f'token = "{self.TOKEN}"')
+        # Bypass the built-in scanner to prove Gitleaks itself is doing the work.
+        clean, findings, ran = _run_gitleaks(diff, repo, timeout=60)
+        assert ran is True
+        assert clean is False
+        assert self.TOKEN not in "".join(findings)
+
+    def test_clean_diff_passes(self, repo: Path) -> None:
+        clean, _, ran = _run_gitleaks(_diff("x = 1"), repo, timeout=60)
+        assert (clean, ran) == (True, True)
+
+    def test_full_scan_flags_the_secret(self, repo: Path) -> None:
+        result = scan_diff_text(_diff(f'token = "{self.TOKEN}"'), repo, require_gitleaks=True)
+        assert result.clean is False
+        assert result.gitleaks_ran is True

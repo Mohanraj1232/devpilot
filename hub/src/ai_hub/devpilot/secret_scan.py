@@ -73,8 +73,10 @@ def scan_builtin(diff_text: str) -> list[str]:
 def _run_gitleaks(diff_text: str, repo_path: Path, timeout: int) -> tuple[bool, list[str], bool]:
     """Return (clean, findings, ran)."""
     try:
+        # NOTE: do not add --no-git here. In Gitleaks 8.18 `--pipe --no-git` silently scans
+        # nothing (exit 0, "no leaks found"); `--pipe` alone scans stdin correctly.
         result = subprocess.run(
-            ["gitleaks", "detect", "--no-git", "--pipe", "--redact", "--exit-code", "1"],
+            ["gitleaks", "detect", "--pipe", "--redact", "--exit-code", "1"],
             cwd=repo_path,
             capture_output=True,
             text=True,
