@@ -28,12 +28,15 @@ class FailureReason(StrEnum):
     AWS_OIDC_FAILURE = "aws_oidc_failure"
     TOKEN_MISSING = "token_missing"
     PERMISSION_DENIED = "permission_denied"
+    RATE_LIMITED = "rate_limited"
 
     # Issue / PR triggers
     ISSUE_CLOSED = "issue_closed"
     ISSUE_DELETED = "issue_deleted"
     ISSUE_EDITED = "issue_edited"
     ISSUE_NOT_ACTIONABLE = "issue_not_actionable"
+    ISSUE_ALREADY_RESOLVED = "issue_already_resolved"
+    LABEL_REMOVED = "label_removed"
     DUPLICATE_EXECUTION = "duplicate_execution"
     EXISTING_PR = "existing_pr"
 
@@ -43,6 +46,7 @@ class FailureReason(StrEnum):
     UNSUPPORTED_PROJECT = "unsupported_project"
     SUBMODULE_FAILURE = "submodule_failure"
     CLONE_FAILURE = "clone_failure"
+    DIRTY_WORKSPACE = "dirty_workspace"
 
     # AI / LLM
     MODEL_UNAVAILABLE = "model_unavailable"
