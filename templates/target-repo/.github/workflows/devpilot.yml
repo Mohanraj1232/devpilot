@@ -10,5 +10,7 @@ jobs:
     uses: Mohanraj1232/devpilot/.github/workflows/devpilot.yml@v1
     secrets:
       DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+      DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+      DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
     with:
       issue_number: ${{ github.event.issue.number }}

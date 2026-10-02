@@ -12,90 +12,102 @@ on:
         required: false
         type: string
         default: ".ai-review/config.yml"
+      hub_ref:
+        description: "Ref of the Central AI Hub to run"
+        required: false
+        type: string
+        default: "v1"
     secrets:
       DEVPILOT_BOT_TOKEN:
+        description: "Fine-grained PAT of the DevPilot bot (contents, pull requests, issues: write)"
         required: true
+      DASHBOARD_URL:
+        description: "Base URL of the DevPilot dashboard"
+        required: false
+      DASHBOARD_TOKEN:
+        description: "Ingest token for this repository"
+        required: false
 
+# One execution per issue at a time. Later runs queue instead of cancelling a run in progress.
+concurrency:
+  group: devpilot-${{ github.repository }}-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
+# The bot PAT performs all repository writes, so the workflow token needs no write access.
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
   id-token: write
 
 jobs:
-  trigger-guard:
+  devpilot:
     runs-on: ubuntu-latest
-    outputs:
-      allowed: ${{ steps.guard.outputs.allowed }}
-      execution_id: ${{ steps.guard.outputs.execution_id }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/checkout@v4
-        with:
-          repository: Mohanraj1232/devpilot
-          ref: v1
-          path: .ai-hub
-          sparse-checkout: hub
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install ai-hub
-        run: pip install .ai-hub/hub
-
-      - name: Run trigger guard
-        id: guard
-        env:
-          GITHUB_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
-        run: |
-          echo "allowed=true" >> "$GITHUB_OUTPUT"
-          echo "execution_id=$(python -c 'import uuid; print(uuid.uuid4().hex[:16])')" >> "$GITHUB_OUTPUT"
-
-  agent:
-    needs: trigger-guard
-    if: needs.trigger-guard.outputs.allowed == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      EXECUTION_ID: ${{ needs.trigger-guard.outputs.execution_id }}
-    steps:
-      - uses: actions/checkout@v4
+      - name: Check out the target repository
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+          fetch-depth: 0
+          # Credentials must not be written to .git/config where repository code could read them.
+          persist-credentials: false
 
-      - uses: actions/checkout@v4
+      - name: Check out the Central AI Hub
+        uses: actions/checkout@v4
         with:
           repository: Mohanraj1232/devpilot
-          ref: v1
+          ref: ${{ inputs.hub_ref }}
           path: .ai-hub
           sparse-checkout: hub
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install ai-hub
-        run: pip install .ai-hub/hub
+      - name: Install ai-hub in an isolated environment
+        run: |
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub
+          # Leave the workspace exactly as checked out; DevPilot refuses a dirty tree.
+          rm -rf .ai-hub
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Install Gitleaks (optional; a built-in scanner is used if this fails)
+        continue-on-error: true
+        run: |
+          version=8.18.4
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
-      - name: Run DevPilot agent
+      - name: Run DevPilot
+        id: devpilot
         env:
-          GITHUB_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
-          ISSUE_NUMBER: ${{ inputs.issue_number }}
-        run: echo "DevPilot agent placeholder — tool-use loop, tests, guardrails, push, PR"
+          DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+          DEVPILOT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/hub-venv/bin/ai-hub" devpilot \
+            --repo "$GITHUB_REPOSITORY" \
+            --issue "$DEVPILOT_ISSUE_NUMBER" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --config "${{ inputs.config_path }}" \
+            --artifacts "$RUNNER_TEMP/devpilot-artifacts"
 
-  post-status:
-    needs: [trigger-guard, agent]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Report execution status
-        env:
-          GITHUB_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
-        run: echo "Post execution status to issue and dashboard"
+      # Result, redacted agent transcript and (when available) the diff, kept for debugging.
+      - name: Upload DevPilot artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devpilot-issue-${{ inputs.issue_number }}
+          path: ${{ runner.temp }}/devpilot-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
