@@ -1,0 +1,14 @@
+name: DevPilot
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  agent:
+    if: github.event.label.name == 'devpilot'
+    uses: Mohanraj1232/devpilot/.github/workflows/devpilot.yml@v1
+    secrets:
+      DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+    with:
+      config_path: .ai-review/config.yml

@@ -1,0 +1,35 @@
+version: 1
+review_mode: standard
+paths:
+  ignore: ["dist/**", "vendor/**", "**/*.min.js"]
+  generated: []
+ai_review:
+  enabled: true
+  max_files: 50
+  inline_min_severity: medium
+static_analysis:
+  enabled: true
+  tools: [ruff, semgrep]
+security:
+  enabled: true
+  tools: [semgrep, gitleaks, deps]
+tests:
+  command: "pytest --cov --cov-report=xml"
+  coverage_report: coverage.xml
+  timeout_minutes: 15
+quality_gate:
+  enabled: true
+  coverage_threshold: 80
+  fail_on:
+    critical: 1
+    high: 1
+  require_tests_pass: true
+  required_checks: [static, security, ai_review]
+devpilot:
+  enabled: true
+  base_branch: main
+  test_command: "pytest"
+  max_fix_attempts: 3
+  max_changed_files: 20
+  max_changed_lines: 800
+  allow_workflow_changes: false

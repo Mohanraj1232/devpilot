@@ -1,0 +1,13 @@
+name: AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    uses: Mohanraj1232/devpilot/.github/workflows/ai-review.yml@v1
+    secrets:
+      DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+    with:
+      config_path: .ai-review/config.yml
