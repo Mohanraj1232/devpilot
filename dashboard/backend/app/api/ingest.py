@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.deps import ensure_token_repo, get_ingest_token
 from app.database import get_db
 from app.models.tables import (
     CheckResult,
     DevPilotExecution,
     Finding,
+    IngestToken,
     Repository,
     ReviewRun,
 )
@@ -24,7 +26,11 @@ from app.schemas.ingest import (
     ReviewRunIngest,
 )
 
-router = APIRouter(prefix="/ingest", tags=["ingest"])
+# Every ingest route requires a valid per-repository bearer token; each handler additionally
+# checks that the token's repository is the one being written to.
+router = APIRouter(
+    prefix="/ingest", tags=["ingest"], dependencies=[Depends(get_ingest_token)]
+)
 
 # An execution in one of these states no longer holds the per-issue lock.
 TERMINAL_EXECUTION_STATUSES = {
@@ -50,8 +56,13 @@ def _get_repo_by_name(db: Session, full_name: str) -> Repository:
 
 
 @router.post("/review-runs", status_code=201)
-def ingest_review_run(body: ReviewRunIngest, db: Session = Depends(get_db)) -> dict:
+def ingest_review_run(
+    body: ReviewRunIngest,
+    db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
+) -> dict:
     repo = _get_repo_by_name(db, body.repo_full_name)
+    ensure_token_repo(token, repo.id)
 
     existing = (
         db.query(ReviewRun)
@@ -60,6 +71,8 @@ def ingest_review_run(body: ReviewRunIngest, db: Session = Depends(get_db)) -> d
     )
 
     if existing:
+        # Never let one repository's token overwrite another repository's run.
+        ensure_token_repo(token, existing.repo_id)
         existing.status = body.status
         existing.risk_score = body.risk_score
         existing.quality_score = body.quality_score
@@ -124,8 +137,13 @@ def ingest_review_run(body: ReviewRunIngest, db: Session = Depends(get_db)) -> d
 
 
 @router.post("/devpilot-executions", status_code=201)
-def ingest_execution(body: ExecutionIngest, db: Session = Depends(get_db)) -> dict:
+def ingest_execution(
+    body: ExecutionIngest,
+    db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
+) -> dict:
     repo = _get_repo_by_name(db, body.repo_full_name)
+    ensure_token_repo(token, repo.id)
 
     existing = (
         db.query(DevPilotExecution)
@@ -133,6 +151,7 @@ def ingest_execution(body: ExecutionIngest, db: Session = Depends(get_db)) -> di
         .first()
     )
     if existing:
+        ensure_token_repo(token, existing.repo_id)
         return {"id": existing.id, "action": "already_exists"}
 
     # Active executions hold the per-issue lock (a unique column), so a concurrent second
@@ -178,6 +197,7 @@ def update_execution(
     execution_id: int,
     body: ExecutionUpdate,
     db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
 ) -> dict:
     execution = (
         db.query(DevPilotExecution)
@@ -186,6 +206,7 @@ def update_execution(
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Execution not found")
+    ensure_token_repo(token, execution.repo_id)
 
     execution.status = body.status
     if body.branch is not None:
@@ -208,7 +229,13 @@ def update_execution(
 
 
 @router.post("/locks/devpilot", response_model=LockResponse)
-def acquire_lock(body: LockRequest, db: Session = Depends(get_db)) -> LockResponse:
+def acquire_lock(
+    body: LockRequest,
+    db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
+) -> LockResponse:
+    repo = _get_repo_by_name(db, body.repo_full_name)
+    ensure_token_repo(token, repo.id)
     lock_key = execution_lock_key(body.repo_full_name, body.issue_number)
 
     existing = (
@@ -223,13 +250,18 @@ def acquire_lock(body: LockRequest, db: Session = Depends(get_db)) -> LockRespon
 
 
 @router.delete("/locks/devpilot/{lock_key:path}")
-def release_lock(lock_key: str, db: Session = Depends(get_db)) -> dict:
+def release_lock(
+    lock_key: str,
+    db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
+) -> dict:
     execution = (
         db.query(DevPilotExecution)
         .filter(DevPilotExecution.lock_key == lock_key)
         .first()
     )
     if execution:
+        ensure_token_repo(token, execution.repo_id)
         execution.lock_key = None
         db.commit()
     return {"released": True}

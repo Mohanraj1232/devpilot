@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import secrets
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.api.deps import hash_ingest_token
 from app.database import get_db
 from app.models.tables import IngestToken, Repository
 from app.schemas.repos import RepoCreate, RepoResponse, RepoUpdate, RepoVerification
@@ -135,11 +136,10 @@ def rotate_ingest_token(
     db.query(IngestToken).filter(
         IngestToken.repo_id == repo_id,
         IngestToken.revoked_at.is_(None),
-    ).update({"revoked_at": __import__("datetime").datetime.now(__import__("datetime").UTC)})
+    ).update({"revoked_at": datetime.now(UTC)})
 
     raw_token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-    token = IngestToken(repo_id=repo_id, token_hash=token_hash)
+    token = IngestToken(repo_id=repo_id, token_hash=hash_ingest_token(raw_token))
     db.add(token)
     db.commit()
 

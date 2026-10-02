@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.api.deps import ensure_token_repo, get_ingest_token
 from app.database import get_db
-from app.models.tables import RepoPolicy, Repository
+from app.models.tables import IngestToken, RepoPolicy, Repository
 from app.schemas.policy import PolicyCreate, PolicyResponse, WorkflowPolicyResponse
 
 router = APIRouter(tags=["policy"])
@@ -67,6 +68,7 @@ def get_latest_policy(
     owner: str,
     repo: str,
     db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
 ) -> WorkflowPolicyResponse:
     full_name = f"{owner}/{repo}"
     repo_obj = (
@@ -74,6 +76,8 @@ def get_latest_policy(
     )
     if not repo_obj or repo_obj.status != "active":
         raise HTTPException(status_code=404, detail="Repository not found or inactive")
+    # Workflow-facing: only the repository's own token may read its policy.
+    ensure_token_repo(token, repo_obj.id)
 
     policy = (
         db.query(RepoPolicy)
