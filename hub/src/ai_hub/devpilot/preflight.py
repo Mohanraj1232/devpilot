@@ -21,29 +21,32 @@ logger = logging.getLogger("ai_hub.devpilot")
 class PrePushCheck:
     passed: bool
     reason: str | None = None
+    failure_reason: FailureReason | None = None
 
 
 def check_issue_still_open(issue: IssueSnapshot) -> PrePushCheck:
     if issue.state != "open":
-        return PrePushCheck(False, "Issue was closed during execution")
+        return PrePushCheck(False, "Issue was closed during execution", FailureReason.ISSUE_CLOSED)
     return PrePushCheck(True)
 
 
 def check_issue_not_edited(original_hash: str, current: IssueSnapshot) -> PrePushCheck:
     if current.body_hash != original_hash:
-        return PrePushCheck(False, "Issue was edited during execution")
+        return PrePushCheck(False, "Issue was edited during execution", FailureReason.ISSUE_EDITED)
     return PrePushCheck(True)
 
 
 def check_base_not_moved(original_base_sha: str, current_base_sha: str) -> PrePushCheck:
     if original_base_sha != current_base_sha:
-        return PrePushCheck(False, "Base branch moved during execution")
+        return PrePushCheck(False, "Base branch moved during execution", FailureReason.BASE_MOVED)
     return PrePushCheck(True)
 
 
 def check_label_still_present(labels: list[str]) -> PrePushCheck:
     if "devpilot" not in labels:
-        return PrePushCheck(False, "DevPilot label was removed during execution")
+        return PrePushCheck(
+            False, "DevPilot label was removed during execution", FailureReason.LABEL_REMOVED
+        )
     return PrePushCheck(True)
 
 
@@ -56,11 +59,13 @@ def check_clean_tree(repo_path: Path) -> PrePushCheck:
             text=True,
             timeout=30,
         )
-        if result.stdout.strip():
-            return PrePushCheck(False, "Working tree is not clean")
-        return PrePushCheck(True)
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return PrePushCheck(False, "Cannot check tree state")
+        return PrePushCheck(False, "Cannot check tree state", FailureReason.DIRTY_WORKSPACE)
+    if result.returncode != 0:
+        return PrePushCheck(False, "Cannot check tree state", FailureReason.DIRTY_WORKSPACE)
+    if result.stdout.strip():
+        return PrePushCheck(False, "Working tree is not clean", FailureReason.DIRTY_WORKSPACE)
+    return PrePushCheck(True)
 
 
 @dataclass
@@ -77,34 +82,20 @@ def run_preflight_checks(
     current_base_sha: str,
     repo_path: Path,
 ) -> PrePushResult:
-    """Run all pre-push checks. Returns PrePushResult with aggregated failures."""
-    failures: list[str] = []
-
+    """Run all pre-push checks. The failure reason is that of the first failing check."""
     checks = [
         check_issue_still_open(issue),
         check_issue_not_edited(original_hash, issue),
-        check_base_not_moved(original_base_sha, current_base_sha),
         check_label_still_present(issue.labels),
+        check_base_not_moved(original_base_sha, current_base_sha),
         check_clean_tree(repo_path),
     ]
+    failed = [c for c in checks if not c.passed]
+    if not failed:
+        return PrePushResult(True, [])
 
-    for check in checks:
-        if not check.passed and check.reason:
-            failures.append(check.reason)
-
-    if failures:
-        reason = FailureReason.BASE_MOVED
-        for f in failures:
-            if "closed" in f:
-                reason = FailureReason.ISSUE_CLOSED
-                break
-            if "edited" in f:
-                reason = FailureReason.ISSUE_EDITED
-                break
-            if "label" in f.lower():
-                reason = FailureReason.ISSUE_CLOSED
-                break
-
-        return PrePushResult(False, failures, reason)
-
-    return PrePushResult(True, [])
+    return PrePushResult(
+        False,
+        [c.reason for c in failed if c.reason],
+        failed[0].failure_reason,
+    )

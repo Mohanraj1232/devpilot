@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from ai_hub.devpilot.agent import _handle_apply_edit, run_agent_loop
+from ai_hub.devpilot.agent import run_agent_loop
 from ai_hub.devpilot.git_ops import (
     has_changes,
     make_branch_name,
@@ -25,6 +25,7 @@ from ai_hub.devpilot.tester import run_test_repair_loop, run_tests
 from ai_hub.devpilot.tools import (
     ToolPolicy,
     _is_path_allowed,
+    tool_apply_edit,
     tool_list_dir,
     tool_read_file,
     tool_search_code,
@@ -346,7 +347,7 @@ class TestApplyEdit:
         f = tmp_path / "edit.py"
         f.write_text("old_value = 1")
         policy = ToolPolicy(workspace=tmp_path)
-        result = _handle_apply_edit("edit.py", "old_value", "new_value", policy)
+        result = tool_apply_edit("edit.py", "old_value", "new_value", policy)
         assert result["success"] is True
         assert f.read_text() == "new_value = 1"
 
@@ -354,12 +355,12 @@ class TestApplyEdit:
         f = tmp_path / "edit.py"
         f.write_text("something else")
         policy = ToolPolicy(workspace=tmp_path)
-        result = _handle_apply_edit("edit.py", "nonexistent", "new", policy)
+        result = tool_apply_edit("edit.py", "nonexistent", "new", policy)
         assert "error" in result
 
     def test_apply_edit_denied_path(self, tmp_path: Path) -> None:
         policy = ToolPolicy(workspace=tmp_path)
-        result = _handle_apply_edit("../../etc/hosts", "a", "b", policy)
+        result = tool_apply_edit("../../etc/hosts", "a", "b", policy)
         assert "error" in result
 
 

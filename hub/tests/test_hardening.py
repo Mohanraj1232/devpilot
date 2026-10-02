@@ -144,28 +144,60 @@ class TestBranchGuard:
         assert name.startswith("devpilot/issue-42-")
         assert "abcdef12" in name
 
-    def test_branch_owned(self, tmp_path: Path) -> None:
-        log_output = (
-            "abc123def456abc123def456abc123def456abc1 Fix login\nDevPilot-Execution: exec-001\n"
-        )
-        with patch("ai_hub.devpilot.branch_guard.subprocess.run") as mock:
-            mock.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=log_output, stderr=""
+    def _repo_with_origin(self, tmp_path: Path) -> Path:
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
             )
-            result = check_branch_ownership(tmp_path, "main", "exec-001")
+
+        git("init", "-b", "main")
+        (tmp_path / "a.txt").write_text("a")
+        git("add", "-A")
+        git("commit", "-m", "base")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        return tmp_path
+
+    def _commit(self, repo: Path, name: str, message: str) -> None:
+        (repo / name).write_text(name)
+        for args in (["add", "-A"], ["commit", "-m", message]):
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+
+    def test_branch_owned(self, tmp_path: Path) -> None:
+        repo = self._repo_with_origin(tmp_path)
+        self._commit(repo, "b.txt", "Fix login\n\nDevPilot-Execution: exec-001")
+        result = check_branch_ownership(repo, "main", "exec-001")
         assert result.is_owned is True
 
+    def test_branch_with_no_commits_is_owned(self, tmp_path: Path) -> None:
+        repo = self._repo_with_origin(tmp_path)
+        assert check_branch_ownership(repo, "main", "exec-001").is_owned is True
+
     def test_branch_foreign_commits(self, tmp_path: Path) -> None:
-        log_output = (
-            "abc123def456abc123def456abc123def456abc1 Fix login\nDevPilot-Execution: exec-999\n"
-        )
-        with patch("ai_hub.devpilot.branch_guard.subprocess.run") as mock:
-            mock.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=log_output, stderr=""
-            )
-            result = check_branch_ownership(tmp_path, "main", "exec-001")
+        repo = self._repo_with_origin(tmp_path)
+        self._commit(repo, "b.txt", "Fix login\n\nDevPilot-Execution: exec-999")
+        result = check_branch_ownership(repo, "main", "exec-001")
         assert result.is_owned is False
-        assert len(result.foreign_commits) > 0
+        assert len(result.foreign_commits) == 1
+
+    def test_plain_developer_commit_is_foreign(self, tmp_path: Path) -> None:
+        repo = self._repo_with_origin(tmp_path)
+        self._commit(repo, "b.txt", "Fix login\n\nDevPilot-Execution: exec-001")
+        self._commit(repo, "c.txt", "developer tweak")
+        result = check_branch_ownership(repo, "main", "exec-001")
+        assert result.is_owned is False
+        assert len(result.foreign_commits) == 1
+
+    def test_unreadable_history_is_not_owned(self, tmp_path: Path) -> None:
+        # Not a git repository: ownership cannot be verified, so fail closed.
+        assert check_branch_ownership(tmp_path, "main", "exec-001").is_owned is False
 
 
 # ── Flaky detection tests ─────────────────────────────────────

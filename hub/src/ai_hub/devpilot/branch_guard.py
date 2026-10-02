@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ai_hub.devpilot.git_ops import make_branch_name
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -14,6 +16,8 @@ logger = logging.getLogger("ai_hub.devpilot")
 
 
 EXECUTION_TRAILER = "DevPilot-Execution"
+_RECORD_SEP = "\x1e"
+_UNIT_SEP = "\x1f"
 
 
 @dataclass
@@ -23,39 +27,46 @@ class BranchOwnership:
 
 
 def check_branch_ownership(repo_path: Path, base_branch: str, execution_id: str) -> BranchOwnership:
-    """Verify all commits on this branch belong to the given execution."""
+    """Verify every commit on this branch (beyond the base) was made by this execution.
+
+    A commit is foreign unless it carries this execution's ``DevPilot-Execution`` trailer,
+    so a developer's plain commit on the branch is detected too.
+    """
     try:
         result = subprocess.run(
-            ["git", "log", f"origin/{base_branch}..HEAD", "--format=%H %s%n%b"],
+            [
+                "git",
+                "log",
+                f"origin/{base_branch}..HEAD",
+                f"--format=%H{_UNIT_SEP}%B{_RECORD_SEP}",
+            ],
             cwd=repo_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return BranchOwnership(False, ["Cannot read branch history"])
 
+    if result.returncode != 0:
+        return BranchOwnership(False, ["Cannot read branch history"])
+
     foreign: list[str] = []
-    current_sha = ""
-
-    for line in result.stdout.splitlines():
-        stripped = line.strip()
-        if not stripped:
+    for record in result.stdout.split(_RECORD_SEP):
+        sha, _, body = record.strip().partition(_UNIT_SEP)
+        if not sha:
             continue
+        owners = {
+            line.split(":", 1)[1].strip()
+            for line in body.splitlines()
+            if line.startswith(f"{EXECUTION_TRAILER}:")
+        }
+        if execution_id not in owners:
+            foreign.append(sha)
 
-        if len(stripped.split(" ", 1)[0]) == 40:
-            current_sha = stripped.split(" ", 1)[0]
-            continue
-
-        if stripped.startswith(f"{EXECUTION_TRAILER}:"):
-            trailer_id = stripped.split(":", 1)[1].strip()
-            if trailer_id != execution_id and current_sha:
-                foreign.append(current_sha)
-
-    return BranchOwnership(
-        is_owned=len(foreign) == 0,
-        foreign_commits=foreign,
-    )
+    return BranchOwnership(is_owned=not foreign, foreign_commits=foreign)
 
 
 def is_devpilot_branch(branch_name: str) -> bool:
@@ -65,7 +76,4 @@ def is_devpilot_branch(branch_name: str) -> bool:
 
 def make_unique_branch(issue_number: int, title_slug: str, execution_id: str) -> str:
     """Generate a unique branch name using the execution ID suffix."""
-    import re
-
-    slug = re.sub(r"[^a-z0-9]+", "-", title_slug.lower().strip())[:40].strip("-")
-    return f"devpilot/issue-{issue_number}-{slug}-{execution_id[:8]}"
+    return make_branch_name(issue_number, title_slug, execution_id)

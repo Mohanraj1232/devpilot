@@ -2,20 +2,48 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from ai_hub.errors import FailureReason
 
 logger = logging.getLogger("ai_hub.devpilot")
 
 _FORBIDDEN_PATHS = [
     "CODEOWNERS",
+    ".github/CODEOWNERS",
+    "docs/CODEOWNERS",
     ".github/workflows/",
     ".github/FUNDING.yml",
+]
+
+# File-name globs that must never be committed by the agent (credentials / key material).
+_FORBIDDEN_NAME_GLOBS = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa*",
+    "id_ed25519*",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
 ]
 
 _SECURITY_CONFIG_PATHS = [
     ".github/branch-protection",
     ".github/settings.yml",
+    ".github/dependabot.yml",
+]
+
+# Files that disable or weaken security tooling.
+_SECURITY_TOOLING_PATHS = [
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".ai-review/config.yml",
 ]
 
 
@@ -23,6 +51,15 @@ _SECURITY_CONFIG_PATHS = [
 class GuardrailCheck:
     passed: bool
     violations: list[str]
+    reasons: list[FailureReason] = field(default_factory=list)
+
+
+def _result(violations: list[str], reason: FailureReason) -> GuardrailCheck:
+    return GuardrailCheck(
+        passed=not violations,
+        violations=violations,
+        reasons=[reason] if violations else [],
+    )
 
 
 def check_diff_size(
@@ -38,7 +75,7 @@ def check_diff_size(
         violations.append(f"Changed {len(changed_files)} files (max: {max_files})")
     if changed_lines > max_lines:
         violations.append(f"Changed {changed_lines} lines (max: {max_lines})")
-    return GuardrailCheck(passed=len(violations) == 0, violations=violations)
+    return _result(violations, FailureReason.DIFF_TOO_LARGE)
 
 
 def check_forbidden_changes(
@@ -46,15 +83,21 @@ def check_forbidden_changes(
     *,
     allow_workflow_changes: bool = False,
 ) -> GuardrailCheck:
-    """Check for changes to forbidden paths."""
+    """Check for changes to forbidden paths (workflows, CODEOWNERS, credential files)."""
     violations: list[str] = []
     for f in changed_files:
+        normalized = f.replace("\\", "/")
+        name = normalized.rsplit("/", 1)[-1]
+        if any(fnmatch.fnmatch(name.lower(), g) for g in _FORBIDDEN_NAME_GLOBS):
+            violations.append(f"Forbidden change (credential/key file): {f}")
+            continue
         for forbidden in _FORBIDDEN_PATHS:
             if forbidden == ".github/workflows/" and allow_workflow_changes:
                 continue
-            if f.startswith(forbidden) or f == forbidden:
+            if normalized.startswith(forbidden) or normalized == forbidden:
                 violations.append(f"Forbidden change: {f}")
-    return GuardrailCheck(passed=len(violations) == 0, violations=violations)
+                break
+    return _result(violations, FailureReason.FORBIDDEN_CHANGE)
 
 
 def check_unrelated_changes(
@@ -66,9 +109,8 @@ def check_unrelated_changes(
     unrelated = [f for f in changed_files if f not in planned_set]
 
     if len(unrelated) > len(planned_files):
-        return GuardrailCheck(
-            passed=False,
-            violations=[f"Too many unrelated files: {unrelated[:5]}"],
+        return _result(
+            [f"Too many unrelated files: {unrelated[:5]}"], FailureReason.UNRELATED_CHANGES
         )
     return GuardrailCheck(passed=True, violations=[])
 
@@ -80,7 +122,7 @@ def check_destructive_operations(
     allow_destructive: bool = False,
     max_deletions: int = 5,
 ) -> GuardrailCheck:
-    """Check for destructive operations like mass file deletions."""
+    """Check for destructive operations: mass deletions and edits to security configuration."""
     if allow_destructive:
         return GuardrailCheck(passed=True, violations=[])
 
@@ -89,11 +131,11 @@ def check_destructive_operations(
         violations.append(f"Deleted {len(deleted_files)} files (max: {max_deletions})")
 
     for f in changed_files:
-        for sec_path in _SECURITY_CONFIG_PATHS:
-            if f.startswith(sec_path) or f == sec_path:
+        normalized = f.replace("\\", "/")
+        for sec_path in (*_SECURITY_CONFIG_PATHS, *_SECURITY_TOOLING_PATHS):
+            if normalized.startswith(sec_path) or normalized == sec_path:
                 violations.append(f"Security config change: {f}")
-
-    return GuardrailCheck(passed=len(violations) == 0, violations=violations)
+    return _result(violations, FailureReason.DESTRUCTIVE_OPERATION)
 
 
 def run_all_guardrails(
@@ -108,26 +150,14 @@ def run_all_guardrails(
     deleted_files: list[str] | None = None,
 ) -> GuardrailCheck:
     """Run all guardrail checks and aggregate results."""
-    all_violations: list[str] = []
-
-    size_check = check_diff_size(
-        changed_files, changed_lines, max_files=max_files, max_lines=max_lines
-    )
-    all_violations.extend(size_check.violations)
-
-    forbidden_check = check_forbidden_changes(
-        changed_files, allow_workflow_changes=allow_workflow_changes
-    )
-    all_violations.extend(forbidden_check.violations)
-
-    unrelated_check = check_unrelated_changes(changed_files, planned_files)
-    all_violations.extend(unrelated_check.violations)
-
-    destructive_check = check_destructive_operations(
-        changed_files,
-        deleted_files or [],
-        allow_destructive=allow_destructive,
-    )
-    all_violations.extend(destructive_check.violations)
-
-    return GuardrailCheck(passed=len(all_violations) == 0, violations=all_violations)
+    checks = [
+        check_diff_size(changed_files, changed_lines, max_files=max_files, max_lines=max_lines),
+        check_forbidden_changes(changed_files, allow_workflow_changes=allow_workflow_changes),
+        check_unrelated_changes(changed_files, planned_files),
+        check_destructive_operations(
+            changed_files, deleted_files or [], allow_destructive=allow_destructive
+        ),
+    ]
+    violations = [v for c in checks for v in c.violations]
+    reasons = [r for c in checks for r in c.reasons]
+    return GuardrailCheck(passed=not violations, violations=violations, reasons=reasons)
