@@ -1,19 +1,21 @@
-name: Hub CI
+name: CI
 
 on:
   push:
     branches: [main]
-    paths: ["hub/**", ".github/workflows/hub-ci.yml"]
+    paths: ["hub/**", "dashboard/**", ".github/workflows/hub-ci.yml"]
   pull_request:
-    paths: ["hub/**", ".github/workflows/hub-ci.yml"]
+    paths: ["hub/**", "dashboard/**", ".github/workflows/hub-ci.yml"]
 
-defaults:
-  run:
-    working-directory: hub
+permissions:
+  contents: read
 
 jobs:
   lint-and-typecheck:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hub
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +40,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hub
     steps:
       - uses: actions/checkout@v4
 
@@ -51,5 +56,46 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
 
+      # The real Gitleaks binary, so the integration tests run instead of being skipped.
+      # Same pinned release and checksum as the DevPilot workflow.
+      - name: Install Gitleaks
+        working-directory: .
+        run: |
+          version=8.18.4
+          sha256=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Run tests
         run: pytest --cov=ai_hub --cov-report=term-missing
+
+  dashboard-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest respx
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Migrations apply cleanly and match the models
+        env:
+          DEVPILOT_DATABASE_URL: sqlite:///ci_migration_check.db
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
