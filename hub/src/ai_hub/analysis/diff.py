@@ -85,7 +85,15 @@ def parse_unified_diff(diff_text: str) -> list[FileDiff]:
     current_file: FileDiff | None = None
     current_hunk: Hunk | None = None
 
-    for raw_line in diff_text.splitlines():
+    # Split on "\n" only. str.splitlines() also splits on "\r", form feed, U+2028 and other
+    # characters that can legitimately appear *inside* a source line, which shifts every line
+    # number after them. A trailing "\r" (CRLF files) is not part of the line's content.
+    lines = diff_text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # the newline that terminates the last line
+
+    for raw_line in lines:
+        raw_line = raw_line.rstrip("\r")
         header_match = _DIFF_HEADER.match(raw_line)
         if header_match:
             current_file = FileDiff(
@@ -176,6 +184,11 @@ def build_changed_line_map(file_diffs: list[FileDiff]) -> dict[str, set[int]]:
     return {fd.path: fd.added_lines for fd in file_diffs if fd.path}
 
 
+def load_diff_text(path: Path) -> str:
+    """Read a diff file as bytes: text mode would translate "\r" and corrupt line counting."""
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
 def read_diff_file(path: Path) -> list[FileDiff]:
     """Read and parse a diff from a file on disk."""
-    return parse_unified_diff(path.read_text())
+    return parse_unified_diff(load_diff_text(path))

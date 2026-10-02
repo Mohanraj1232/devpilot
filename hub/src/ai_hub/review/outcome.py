@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ai_hub.analysis.diff import build_changed_line_map, parse_unified_diff
+from ai_hub.analysis.diff import build_changed_line_map, load_diff_text, parse_unified_diff
 from ai_hub.config.loader import load_config
 from ai_hub.errors import ConfigError
 from ai_hub.gate.evaluator import evaluate_gate
@@ -154,7 +154,7 @@ def compute_outcome(inputs_dir: Path, results_dir: Path, *, fork_pr: bool = Fals
 
     diff_path = inputs_dir / "diff.patch"
     try:
-        file_diffs = parse_unified_diff(diff_path.read_text("utf-8"))
+        file_diffs = parse_unified_diff(load_diff_text(diff_path))
     except OSError:
         return _fail(["The PR diff is missing; the review cannot be trusted"], checks, notes)
     added = build_changed_line_map(file_diffs)

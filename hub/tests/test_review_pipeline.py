@@ -387,3 +387,31 @@ class TestMeasureCoverage:
 def test_severity_import_is_used() -> None:
     # keeps the Severity import meaningful for readers of the partition tests above
     assert Severity.HIGH.value == "high"
+
+
+class TestPrepareKeepsLineNumbersExact:
+    def test_crlf_repository_has_the_right_added_lines(self, tmp_path: Path) -> None:
+        from ai_hub.analysis.diff import build_changed_line_map, load_diff_text, parse_unified_diff
+
+        repo = make_pr_repo(
+            tmp_path,
+            base={"src/app.py": "a = 1\n"},
+            pr={"src/app.py": "a = 1\nb = 2\nc = 3\n"},
+        )
+        prepare_review_inputs(repo, tmp_path / "in")
+        added = build_changed_line_map(
+            parse_unified_diff(load_diff_text(tmp_path / "in" / "diff.patch"))
+        )
+        assert added == {"src/app.py": {2, 3}}
+
+    def test_file_with_form_feeds_and_unicode_separators(self, tmp_path: Path) -> None:
+        from ai_hub.analysis.diff import build_changed_line_map, load_diff_text, parse_unified_diff
+
+        base = "first\n"
+        pr = "first\nsecond\x0cstill second\nthird   still third\nfourth\n"
+        repo = make_pr_repo(tmp_path, base={"f.txt": base}, pr={"f.txt": pr})
+        prepare_review_inputs(repo, tmp_path / "in")
+        added = build_changed_line_map(
+            parse_unified_diff(load_diff_text(tmp_path / "in" / "diff.patch"))
+        )
+        assert added == {"f.txt": {2, 3, 4}}

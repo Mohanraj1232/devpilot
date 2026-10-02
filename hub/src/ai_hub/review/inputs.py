@@ -71,7 +71,8 @@ def prepare_review_inputs(
             details={"stderr": diff.stderr.decode("utf-8", "replace")[:300]},
         )
     diff_text = diff.stdout.decode("utf-8", errors="replace")
-    (out_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
+    # Written as bytes so no platform newline translation touches the patch.
+    (out_dir / "diff.patch").write_bytes(diff_text.encode("utf-8"))
 
     file_diffs = parse_unified_diff(diff_text)
     changed = [fd.path for fd in file_diffs if fd.path and not fd.is_deleted]

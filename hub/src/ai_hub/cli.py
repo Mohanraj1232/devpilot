@@ -167,7 +167,7 @@ def review_ai(
     """AI code review of the PR diff with Claude on Amazon Bedrock."""
     import os
 
-    from ai_hub.analysis.diff import parse_unified_diff
+    from ai_hub.analysis.diff import load_diff_text, parse_unified_diff
     from ai_hub.models import CheckResult, CheckStatus
     from ai_hub.review.pipeline import normalize_path
     from ai_hub.review.results import write_result
@@ -194,7 +194,7 @@ def review_ai(
     from ai_hub.review.ai_review import run_ai_review
 
     try:
-        file_diffs = parse_unified_diff((inputs / "diff.patch").read_text("utf-8"))
+        file_diffs = parse_unified_diff(load_diff_text(inputs / "diff.patch"))
         client = BedrockClient(model_id, region=os.environ.get("AWS_REGION"))
         findings, check = run_ai_review(client, file_diffs, config)
     except Exception as exc:  # never crash the job: an ERROR check fails the gate instead

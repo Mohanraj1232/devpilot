@@ -26,7 +26,7 @@ def write_files(repo: Path, files: dict[str, str]) -> None:
     for name, content in files.items():
         path = repo / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
 
 
 def make_pr_repo(
