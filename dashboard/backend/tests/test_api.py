@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import hash_ingest_token
 from app.models.tables import IngestToken, Repository, ReviewRun, User
+from tests.conftest import FakeGitHubUser, login
 
 
 def _seed_user(db: Session) -> User:
@@ -56,25 +57,21 @@ class TestRepos:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_register_and_get_repo(
-        self, client: TestClient, db_session: Session
+    def test_register_then_get_repo(
+        self, client: TestClient, db_session: Session, fake_github: FakeGitHubUser
     ) -> None:
+        # Registration itself is covered in test_repo_security.py; this checks the round trip.
         user = _seed_user(db_session)
-        # Simulate session auth
-        with client:
-            client.app.state._test_user_id = user.id
-
-            resp = client.post(
-                "/api/v1/repos",
-                json={
-                    "github_repo_id": 9999,
-                    "owner": "org",
-                    "name": "repo",
-                    "full_name": "org/repo",
-                },
-            )
-            # Without real session auth, this returns 401
-            assert resp.status_code in (201, 401)
+        login(client, user.id)
+        fake_github.add_repo("org/repo", 9999)
+        created = client.post(
+            "/api/v1/repos",
+            json={"github_repo_id": 9999, "owner": "org", "name": "repo", "full_name": "org/repo"},
+        )
+        assert created.status_code == 201
+        fetched = client.get(f"/api/v1/repos/{created.json()['id']}")
+        assert fetched.status_code == 200
+        assert fetched.json()["full_name"] == "org/repo"
 
     def test_get_repo_not_found(self, client: TestClient) -> None:
         resp = client.get("/api/v1/repos/999")

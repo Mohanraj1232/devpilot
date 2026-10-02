@@ -10,6 +10,7 @@ from app.api import analytics, auth, executions, ingest, policy, repos, reviews,
 from app.config import Settings
 
 settings = Settings()
+settings.validate_for_runtime()
 
 app = FastAPI(title="DevPilot Dashboard", version="1.0.0")
 

@@ -2,18 +2,83 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import os
 from collections.abc import Generator
 from typing import Any
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+# The application refuses to start with the placeholder session key outside development.
+os.environ.setdefault("DEVPILOT_ENVIRONMENT", "development")
 
-from app.database import get_db
-from app.main import app
-from app.models.base import Base
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from itsdangerous import TimestampSigner  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from app.api.deps import get_github  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.database import get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.base import Base  # noqa: E402
+
+
+def login(client: TestClient, user_id: int, github_token: str = "gho_test") -> None:
+    """Log ``client`` in by sending a correctly signed session cookie (what Starlette issues)."""
+    payload = base64.b64encode(
+        json.dumps({"user_id": user_id, "github_token": github_token}).encode()
+    )
+    signed = TimestampSigner(Settings().secret_key).sign(payload).decode()
+    client.cookies.set("session", signed)
+
+
+class FakeGitHubUser:
+    """Stands in for GitHubUserClient: a tiny in-memory GitHub as seen by the logged-in user."""
+
+    def __init__(self) -> None:
+        self.repos: dict[str, dict[str, Any]] = {}
+        self.collaborators: dict[tuple[str, str], str] = {}
+        self.files: set[tuple[str, str]] = set()
+        self.protection: dict[str, dict[str, Any] | None] = {}
+        self.rules: dict[str, list[dict[str, Any]]] = {}
+
+    def add_repo(
+        self, full_name: str, repo_id: int, *, admin: bool = True, default_branch: str = "main"
+    ) -> None:
+        owner, name = full_name.split("/")
+        self.repos[full_name] = {
+            "id": repo_id,
+            "full_name": full_name,
+            "name": name,
+            "owner": {"login": owner},
+            "default_branch": default_branch,
+            "permissions": {"admin": admin, "push": admin, "pull": True},
+        }
+
+    def get_repo(self, full_name: str) -> dict[str, Any] | None:
+        return self.repos.get(full_name)
+
+    def collaborator_permission(self, full_name: str, login_name: str) -> str | None:
+        return self.collaborators.get((full_name, login_name))
+
+    def file_exists(self, full_name: str, path: str, ref: str | None = None) -> bool:
+        return (full_name, path) in self.files
+
+    def branch_protection(self, full_name: str, branch: str) -> dict[str, Any] | None:
+        return self.protection.get(full_name)
+
+    def branch_rules(self, full_name: str, branch: str) -> list[dict[str, Any]]:
+        return self.rules.get(full_name, [])
+
+
+@pytest.fixture
+def fake_github() -> Generator[FakeGitHubUser, None, None]:
+    fake = FakeGitHubUser()
+    app.dependency_overrides[get_github] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_github, None)
 
 
 @pytest.fixture

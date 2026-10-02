@@ -5,11 +5,35 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 
-from fastapi import Depends, Header, HTTPException
+from typing import Any
+
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.database import get_db
+from app.github_client import GitHubUserClient
 from app.models.tables import IngestToken
+
+
+def get_github(request: Request) -> GitHubUserClient:
+    """GitHub client acting as the logged-in user (401 if not logged in)."""
+    token = request.session.get("github_token")
+    if not request.session.get("user_id") or not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return GitHubUserClient(token, Settings().github_api_url)
+
+
+def require_repo_admin(gh: GitHubUserClient, full_name: str) -> dict[str, Any]:
+    """The user must have admin rights on the GitHub repository. Returns GitHub's repo data."""
+    data = gh.get_repo(full_name)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Repository not found or not accessible")
+    if not (data.get("permissions") or {}).get("admin"):
+        raise HTTPException(
+            status_code=403, detail="You need admin access to this repository on GitHub"
+        )
+    return data
 
 
 def hash_ingest_token(raw_token: str) -> str:

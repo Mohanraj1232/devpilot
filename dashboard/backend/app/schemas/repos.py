@@ -38,3 +38,5 @@ class RepoVerification(BaseModel):
     workflows_present: bool
     branch_protection: bool
     all_passed: bool
+    # What to fix, one actionable line per failed check.
+    messages: list[str] = []

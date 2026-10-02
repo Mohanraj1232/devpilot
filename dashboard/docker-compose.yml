@@ -22,7 +22,12 @@ services:
       - "8000:8000"
     environment:
       DEVPILOT_DATABASE_URL: mysql+pymysql://devpilot:devpilot@mysql:3306/devpilot
-      DEVPILOT_SECRET_KEY: change-me-in-production
+      # Required: signs login sessions. Generate one with `openssl rand -hex 32`.
+      DEVPILOT_SECRET_KEY: ${DEVPILOT_SECRET_KEY:?set DEVPILOT_SECRET_KEY to a long random value}
+      # GitHub OAuth App (login) and the bot account whose access `verify` checks.
+      DEVPILOT_GITHUB_CLIENT_ID: ${DEVPILOT_GITHUB_CLIENT_ID:-}
+      DEVPILOT_GITHUB_CLIENT_SECRET: ${DEVPILOT_GITHUB_CLIENT_SECRET:-}
+      DEVPILOT_BOT_LOGIN: ${DEVPILOT_BOT_LOGIN:-}
     depends_on:
       mysql:
         condition: service_healthy

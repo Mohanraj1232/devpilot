@@ -79,6 +79,9 @@ def callback(
         db.refresh(user)
 
     request.session["user_id"] = user.id
+    # Kept only in the signed session cookie (never in the database) so the dashboard can
+    # check, as this user, which repositories they administer.
+    request.session["github_token"] = access_token
     return {"status": "ok", "login": user.login}
 
 

@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import ensure_token_repo, get_ingest_token
+from app.api.deps import ensure_token_repo, get_github, get_ingest_token, require_repo_admin
 from app.database import get_db
+from app.github_client import GitHubUserClient
 from app.models.tables import IngestToken, RepoPolicy, Repository
 from app.schemas.policy import PolicyCreate, PolicyResponse, WorkflowPolicyResponse
 
@@ -38,11 +39,14 @@ def create_policy(
     body: PolicyCreate,
     request: Request,
     db: Session = Depends(get_db),
+    gh: GitHubUserClient = Depends(get_github),
 ) -> PolicyResponse:
     user_id = _get_current_user_id(request)
     repo = db.query(Repository).filter(Repository.id == repo_id).first()
     if not repo or repo.status == "removed":
         raise HTTPException(status_code=404, detail="Repository not found")
+    # Policy tightens or loosens what runs on the repository: admins only.
+    require_repo_admin(gh, repo.full_name)
 
     max_version = (
         db.query(func.max(RepoPolicy.version))
