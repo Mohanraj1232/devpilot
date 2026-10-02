@@ -102,12 +102,13 @@ jobs:
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
           DEVPILOT_REQUIRE_GITLEAKS: "true"
+          CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           "$RUNNER_TEMP/hub-venv/bin/ai-hub" devpilot \
             --repo "$GITHUB_REPOSITORY" \
             --issue "$DEVPILOT_ISSUE_NUMBER" \
             --workspace "$GITHUB_WORKSPACE" \
-            --config "${{ inputs.config_path }}" \
+            --config "$CONFIG_PATH" \
             --artifacts "$RUNNER_TEMP/devpilot-artifacts"
 
       # Result, redacted agent transcript and (when available) the diff, kept for debugging.

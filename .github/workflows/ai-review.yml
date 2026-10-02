@@ -1,5 +1,17 @@
 name: AI Review Pipeline
 
+# Reusable workflow: call it from a `pull_request` workflow (never `pull_request_target`,
+# which would run untrusted code with secrets). The caller job must grant the permissions
+# below; see templates/target-repo/.github/workflows/ai-review.yml.
+#
+# Trust model
+#   * Jobs that run the PR's code (static, security, tests) have no secrets and a
+#     read-only token. They run tools with a scrubbed environment.
+#   * AWS credentials exist only in the ai-review job, which is skipped for forks and
+#     Dependabot (they cannot receive credentials).
+#   * The quality-gate configuration comes from the BASE branch, not the PR.
+#   * The final report job always runs; a missing or unreadable result fails the gate.
+
 on:
   workflow_call:
     inputs:
@@ -8,98 +20,399 @@ on:
         required: false
         type: string
         default: ".ai-review/config.yml"
+      hub_ref:
+        description: "Ref of the Central AI Hub to run"
+        required: false
+        type: string
+        default: "v1"
     secrets:
-      DEVPILOT_BOT_TOKEN:
-        required: true
+      DASHBOARD_URL:
+        description: "Base URL of the DevPilot dashboard (optional)"
+        required: false
+      DASHBOARD_TOKEN:
+        description: "Ingest token for this repository (optional)"
+        required: false
+
+# A newer push supersedes the review of an older commit.
+concurrency:
+  group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
-  id-token: write
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
-      config_version: ${{ steps.config.outputs.version }}
-      config_valid: ${{ steps.config.outputs.valid }}
+      config_valid: ${{ steps.status.outputs.config_valid }}
+      ai_available: ${{ steps.status.outputs.ai_available }}
     steps:
+      # The merge commit of the PR: its first parent is the base branch tip.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
       - uses: actions/checkout@v4
         with:
           repository: Mohanraj1232/devpilot
-          ref: v1
+          ref: ${{ inputs.hub_ref }}
           path: .ai-hub
           sparse-checkout: hub
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install ai-hub
-        run: pip install .ai-hub/hub
-
-      - name: Validate config
-        id: config
         run: |
-          if ai-hub validate-config "${{ inputs.config_path }}"; then
-            echo "valid=true" >> "$GITHUB_OUTPUT"
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub
+          rm -rf .ai-hub
+
+      - name: Capture the PR diff and the trusted configuration
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          "$RUNNER_TEMP/hub-venv/bin/ai-hub" review prepare \
+            --workspace "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/review-input" \
+            --config-path "$CONFIG_PATH"
+
+      - name: Work out what this run can do
+        id: status
+        env:
+          IS_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          valid=$(python3 -c "import json,sys; print(str(json.load(open(sys.argv[1]))['valid']).lower())" \
+            "$RUNNER_TEMP/review-input/config-status.json")
+          echo "config_valid=$valid" >> "$GITHUB_OUTPUT"
+          # Forks and Dependabot cannot receive cloud credentials.
+          if [ "$IS_SAME_REPO" = "true" ] && [ "$ACTOR" != "dependabot[bot]" ]; then
+            echo "ai_available=true" >> "$GITHUB_OUTPUT"
           else
-            echo "valid=false" >> "$GITHUB_OUTPUT"
+            echo "ai_available=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-input
+          path: ${{ runner.temp }}/review-input
+          retention-days: 14
 
   static:
     needs: prepare
     if: needs.prepare.outputs.config_valid == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: ${{ inputs.hub_ref }}
+          path: .ai-hub
+          sparse-checkout: hub
+          persist-credentials: false
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run static analysis
-        run: echo "Static analysis placeholder — tool adapters run here"
+
+      - name: Install ai-hub and the static-analysis tools
+        run: |
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub "ruff>=0.4" "semgrep>=1.70"
+          rm -rf .ai-hub
+          echo "$RUNNER_TEMP/hub-venv/bin" >> "$GITHUB_PATH"
+
+      # ESLint needs the project's own plugins. --ignore-scripts: never run install scripts.
+      - name: Install JavaScript dependencies (for ESLint)
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts --no-audit --no-fund; fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: ${{ runner.temp }}/review-input
+
+      - name: Static analysis
+        run: |
+          ai-hub review static \
+            --workspace "$GITHUB_WORKSPACE" \
+            --inputs "$RUNNER_TEMP/review-input" \
+            --out "$RUNNER_TEMP/review-results"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-static
+          path: ${{ runner.temp }}/review-results
+          if-no-files-found: warn
+          retention-days: 14
 
   security:
     needs: prepare
     if: needs.prepare.outputs.config_valid == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Run security analysis
-        run: echo "Security analysis placeholder — Semgrep/Bandit/Gitleaks/deps run here"
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: ${{ inputs.hub_ref }}
+          path: .ai-hub
+          sparse-checkout: hub
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ai-hub and the security tools
+        run: |
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub \
+            "semgrep>=1.70" "bandit>=1.7" "pip-audit>=2.7"
+          rm -rf .ai-hub
+          echo "$RUNNER_TEMP/hub-venv/bin" >> "$GITHUB_PATH"
+
+      # Pinned release with a verified checksum (from the release's checksums.txt).
+      - name: Install Gitleaks
+        run: |
+          version=8.18.4
+          sha256=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: ${{ runner.temp }}/review-input
+
+      - name: Security analysis
+        run: |
+          ai-hub review security \
+            --workspace "$GITHUB_WORKSPACE" \
+            --inputs "$RUNNER_TEMP/review-input" \
+            --out "$RUNNER_TEMP/review-results"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-security
+          path: ${{ runner.temp }}/review-results
+          if-no-files-found: warn
+          retention-days: 14
 
   tests:
     needs: prepare
     if: needs.prepare.outputs.config_valid == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Run tests
-        run: echo "Test runner placeholder — configured test command runs here"
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: ${{ inputs.hub_ref }}
+          path: .ai-hub
+          sparse-checkout: hub
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ai-hub lives in its own venv that is NOT on PATH, so the project's dependencies
+      # (installed with the runner's python) cannot clash with it.
+      - name: Install ai-hub
+        run: |
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub
+          rm -rf .ai-hub
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: ${{ runner.temp }}/review-input
+
+      # Runs the PR's tests with a scrubbed environment (no tokens or cloud credentials).
+      - name: Tests and coverage
+        run: |
+          "$RUNNER_TEMP/hub-venv/bin/ai-hub" review tests \
+            --workspace "$GITHUB_WORKSPACE" \
+            --inputs "$RUNNER_TEMP/review-input" \
+            --out "$RUNNER_TEMP/review-results"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-tests
+          path: ${{ runner.temp }}/review-results
+          if-no-files-found: warn
+          retention-days: 14
 
   ai-review:
     needs: prepare
-    if: needs.prepare.outputs.config_valid == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    if: needs.prepare.outputs.config_valid == 'true' && needs.prepare.outputs.ai_available == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: ${{ inputs.hub_ref }}
+          path: .ai-hub
+          sparse-checkout: hub
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ai-hub
+        run: |
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub
+          rm -rf .ai-hub
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: ${{ runner.temp }}/review-input
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
-      - name: Run AI review
-        run: echo "AI review placeholder — Bedrock Converse with diff chunks runs here"
+      # This job only reads the diff; it never executes the PR's code.
+      - name: AI review
+        env:
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+        run: |
+          "$RUNNER_TEMP/hub-venv/bin/ai-hub" review ai \
+            --workspace "$GITHUB_WORKSPACE" \
+            --inputs "$RUNNER_TEMP/review-input" \
+            --out "$RUNNER_TEMP/review-results"
 
-  score-gate-report:
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-ai_review
+          path: ${{ runner.temp }}/review-results
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Always runs. A missing or unreadable result from any job above makes the gate FAIL.
+  report:
     needs: [prepare, static, security, tests, ai-review]
-    if: always() && needs.prepare.outputs.config_valid == 'true'
+    if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - uses: actions/checkout@v4
-      - name: Score, gate, and report
-        run: echo "Score/gate/report placeholder — merge findings, compute scores, evaluate gate, post PR comment and check run"
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: ${{ inputs.hub_ref }}
+          path: .ai-hub
+          sparse-checkout: hub
+          persist-credentials: false
+
+      - name: Install ai-hub
+        run: |
+          python -m venv "$RUNNER_TEMP/hub-venv"
+          "$RUNNER_TEMP/hub-venv/bin/pip" install --quiet .ai-hub/hub
+          rm -rf .ai-hub
+
+      # These may legitimately be missing (a job crashed or was skipped); the gate then fails
+      # closed, so a failed download must not stop this job.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: review-input
+          path: ${{ runner.temp }}/review-input
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: result-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/review-results
+
+      - name: Evaluate the quality gate
+        env:
+          AI_AVAILABLE: ${{ needs.prepare.outputs.ai_available }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/review-input" "$RUNNER_TEMP/review-results"
+          fork_flag=""
+          if [ "$AI_AVAILABLE" != "true" ] && [ -f "$RUNNER_TEMP/review-input/config-status.json" ]; then
+            fork_flag="--fork-pr"
+          fi
+          "$RUNNER_TEMP/hub-venv/bin/ai-hub" gate \
+            --inputs "$RUNNER_TEMP/review-input" \
+            --results "$RUNNER_TEMP/review-results" \
+            --out "$RUNNER_TEMP/review-outcome" \
+            $fork_flag
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: review-outcome
+          path: ${{ runner.temp }}/review-outcome
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report to the pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/hub-venv/bin/ai-hub" report \
+            --outcome "$RUNNER_TEMP/review-outcome/outcome.json" \
+            --pr "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA"
