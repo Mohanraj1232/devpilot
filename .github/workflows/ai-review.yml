@@ -1,0 +1,105 @@
+name: AI Review Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      config_path:
+        description: "Path to .ai-review/config.yml"
+        required: false
+        type: string
+        default: ".ai-review/config.yml"
+    secrets:
+      DEVPILOT_BOT_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  id-token: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      config_version: ${{ steps.config.outputs.version }}
+      config_valid: ${{ steps.config.outputs.valid }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Mohanraj1232/devpilot
+          ref: v1
+          path: .ai-hub
+          sparse-checkout: hub
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ai-hub
+        run: pip install .ai-hub/hub
+
+      - name: Validate config
+        id: config
+        run: |
+          if ai-hub validate-config "${{ inputs.config_path }}"; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  static:
+    needs: prepare
+    if: needs.prepare.outputs.config_valid == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run static analysis
+        run: echo "Static analysis placeholder — tool adapters run here"
+
+  security:
+    needs: prepare
+    if: needs.prepare.outputs.config_valid == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run security analysis
+        run: echo "Security analysis placeholder — Semgrep/Bandit/Gitleaks/deps run here"
+
+  tests:
+    needs: prepare
+    if: needs.prepare.outputs.config_valid == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: echo "Test runner placeholder — configured test command runs here"
+
+  ai-review:
+    needs: prepare
+    if: needs.prepare.outputs.config_valid == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run AI review
+        run: echo "AI review placeholder — Bedrock Converse with diff chunks runs here"
+
+  score-gate-report:
+    needs: [prepare, static, security, tests, ai-review]
+    if: always() && needs.prepare.outputs.config_valid == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Score, gate, and report
+        run: echo "Score/gate/report placeholder — merge findings, compute scores, evaluate gate, post PR comment and check run"
