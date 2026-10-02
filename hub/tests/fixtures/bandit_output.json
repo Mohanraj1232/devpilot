@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "test_id": "B105",
+      "test_name": "hardcoded_password_string",
+      "issue_text": "Possible hardcoded password: 'admin123'",
+      "issue_severity": "LOW",
+      "issue_confidence": "MEDIUM",
+      "filename": "config.py",
+      "line_number": 8,
+      "line_range": [8]
+    },
+    {
+      "test_id": "B608",
+      "test_name": "hardcoded_sql_expressions",
+      "issue_text": "Possible SQL injection via string-based query construction.",
+      "issue_severity": "MEDIUM",
+      "issue_confidence": "LOW",
+      "filename": "db.py",
+      "line_number": 25,
+      "line_range": [25, 26]
+    },
+    {
+      "test_id": "B301",
+      "test_name": "blacklist_calls",
+      "issue_text": "Use of insecure pickle.loads(). Possible remote code execution.",
+      "issue_severity": "HIGH",
+      "issue_confidence": "HIGH",
+      "filename": "serializer.py",
+      "line_number": 14,
+      "line_range": [14]
+    }
+  ],
+  "metrics": {}
+}

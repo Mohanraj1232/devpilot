@@ -1,0 +1,20 @@
+{
+  "dependencies": [
+    {
+      "name": "requests",
+      "version": "2.25.0",
+      "vulns": [
+        {
+          "id": "PYSEC-2023-74",
+          "description": "Requests before 2.31.0 allows a redirect to a different host with cookies.",
+          "fix_versions": ["2.31.0"]
+        }
+      ]
+    },
+    {
+      "name": "flask",
+      "version": "2.3.2",
+      "vulns": []
+    }
+  ]
+}

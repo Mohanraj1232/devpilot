@@ -1,0 +1,38 @@
+[
+  {
+    "filePath": "/repo/src/index.js",
+    "messages": [
+      {
+        "ruleId": "no-unused-vars",
+        "severity": 1,
+        "message": "'x' is assigned a value but never used.",
+        "line": 5,
+        "endLine": 5,
+        "column": 7,
+        "endColumn": 8
+      },
+      {
+        "ruleId": "no-eval",
+        "severity": 2,
+        "message": "eval can be harmful.",
+        "line": 12,
+        "endLine": 12,
+        "column": 1,
+        "endColumn": 20
+      }
+    ]
+  },
+  {
+    "filePath": "/repo/src/utils.js",
+    "messages": [
+      {
+        "ruleId": "prefer-const",
+        "severity": 1,
+        "message": "'foo' is never reassigned. Use 'const' instead.",
+        "line": 3,
+        "endLine": 3,
+        "fix": {"text": "const"}
+      }
+    ]
+  }
+]

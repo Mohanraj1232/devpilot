@@ -1,0 +1,18 @@
+[
+  {
+    "RuleID": "aws-access-key-id",
+    "Description": "AWS Access Key ID",
+    "File": "config/settings.py",
+    "StartLine": 12,
+    "EndLine": 12,
+    "Match": "AKIAIOSFODNN7EXAMPLE"
+  },
+  {
+    "RuleID": "github-pat",
+    "Description": "GitHub Personal Access Token",
+    "File": ".env",
+    "StartLine": 3,
+    "EndLine": 3,
+    "Match": "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789ab"
+  }
+]

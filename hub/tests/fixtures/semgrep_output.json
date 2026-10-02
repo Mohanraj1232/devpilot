@@ -1,0 +1,33 @@
+{
+  "results": [
+    {
+      "check_id": "python.lang.security.audit.exec-detected",
+      "path": "handler.py",
+      "start": {"line": 22, "col": 5},
+      "end": {"line": 22, "col": 30},
+      "extra": {
+        "severity": "ERROR",
+        "message": "Detected the use of exec(). This can be dangerous.",
+        "metadata": {
+          "category": "security",
+          "impact": "HIGH"
+        },
+        "fix": null
+      }
+    },
+    {
+      "check_id": "python.lang.best-practice.open-never-closed",
+      "path": "utils.py",
+      "start": {"line": 10, "col": 1},
+      "end": {"line": 10, "col": 40},
+      "extra": {
+        "severity": "WARNING",
+        "message": "File opened but never closed. Use a context manager.",
+        "metadata": {
+          "category": "correctness"
+        }
+      }
+    }
+  ],
+  "errors": []
+}

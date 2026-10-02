@@ -1,0 +1,26 @@
+[
+  {
+    "code": "F401",
+    "message": "'os' imported but unused",
+    "filename": "app.py",
+    "location": {"row": 1, "column": 1},
+    "end_location": {"row": 1, "column": 10},
+    "fix": null
+  },
+  {
+    "code": "E501",
+    "message": "Line too long (120 > 100)",
+    "filename": "utils.py",
+    "location": {"row": 15, "column": 101},
+    "end_location": {"row": 15, "column": 120},
+    "fix": null
+  },
+  {
+    "code": "B006",
+    "message": "Do not use mutable data structures for argument defaults",
+    "filename": "models.py",
+    "location": {"row": 42, "column": 5},
+    "end_location": {"row": 42, "column": 30},
+    "fix": {"message": "Replace with `None` and check inside the function"}
+  }
+]
