@@ -31,3 +31,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.iml
+
+# Test fixtures must be tracked even if they match the ignores above
+!hub/tests/fixtures/coverage.xml
