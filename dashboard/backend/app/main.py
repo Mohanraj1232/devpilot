@@ -18,7 +18,10 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
     max_age=settings.session_max_age,
-    https_only=False,
+    # The login cookie carries the user's GitHub token: only send it over HTTPS, except for
+    # local development over plain HTTP. SameSite=lax (the default) blocks cross-site POSTs.
+    https_only=settings.environment != "development",
+    same_site="lax",
 )
 
 app.add_middleware(

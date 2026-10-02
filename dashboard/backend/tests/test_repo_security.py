@@ -465,3 +465,40 @@ def test_get_github_dependency_is_the_one_being_overridden() -> None:
     from app.api import repos
 
     assert repos.get_github is get_github
+
+
+class TestSessionCookie:
+    def _session_options(self) -> dict[str, Any]:
+        import importlib
+
+        import app.main as main_module
+
+        reloaded = importlib.reload(main_module)
+        middleware = next(
+            m for m in reloaded.app.user_middleware if m.cls.__name__ == "SessionMiddleware"
+        )
+        return dict(middleware.kwargs)
+
+    def test_cookie_is_secure_outside_development(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEVPILOT_ENVIRONMENT", "production")
+        monkeypatch.setenv("DEVPILOT_SECRET_KEY", "x" * 48)
+        options = self._session_options()
+        assert options["https_only"] is True
+        assert options["same_site"] == "lax"
+
+    def test_plain_http_is_allowed_only_in_development(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DEVPILOT_ENVIRONMENT", "development")
+        assert self._session_options()["https_only"] is False
+
+    def teardown_method(self) -> None:
+        # Leave the module configured as the rest of the suite expects (development).
+        import importlib
+        import os
+
+        import app.main as main_module
+
+        os.environ["DEVPILOT_ENVIRONMENT"] = "development"
+        os.environ.pop("DEVPILOT_SECRET_KEY", None)
+        importlib.reload(main_module)

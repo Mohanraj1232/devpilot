@@ -27,6 +27,8 @@ services:
       # GitHub OAuth App (login) and the bot account whose access `verify` checks.
       DEVPILOT_GITHUB_CLIENT_ID: ${DEVPILOT_GITHUB_CLIENT_ID:-}
       DEVPILOT_GITHUB_CLIENT_SECRET: ${DEVPILOT_GITHUB_CLIENT_SECRET:-}
+      # Set to "development" only for local use over plain HTTP (the login cookie is otherwise Secure).
+      DEVPILOT_ENVIRONMENT: ${DEVPILOT_ENVIRONMENT:-production}
       DEVPILOT_BOT_LOGIN: ${DEVPILOT_BOT_LOGIN:-}
       # Shared secret configured on the GitHub webhook; empty means webhooks are refused.
       DEVPILOT_WEBHOOK_SECRET: ${DEVPILOT_WEBHOOK_SECRET:-}
