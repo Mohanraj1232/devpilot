@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -241,3 +242,117 @@ class TestExecutions:
     def test_get_execution_not_found(self, client: TestClient) -> None:
         resp = client.get("/api/v1/devpilot-executions/999")
         assert resp.status_code == 404
+
+
+def _execution_payload(run_id: int, status: str = "running") -> dict:
+    return {
+        "repo_full_name": "testorg/testrepo",
+        "issue_number": 42,
+        "issue_hash": "abc123",
+        "base_sha": "def456abc123def456abc123def456abc123def4",
+        "workflow_run_id": run_id,
+        "status": status,
+    }
+
+
+class TestExecutionLock:
+    """The per-issue lock must actually be held while an execution is active."""
+
+    def test_second_active_execution_is_rejected(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        first = client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        assert first.status_code == 201
+        second = client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(2))
+        assert second.status_code == 409
+
+    def test_acquire_reports_held_lock(self, client: TestClient, db_session: Session) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        resp = client.post(
+            "/api/v1/ingest/locks/devpilot",
+            json={"repo_full_name": "testorg/testrepo", "issue_number": 42, "execution_id": "x"},
+        )
+        assert resp.json()["acquired"] is False
+
+    def test_release_frees_the_issue(self, client: TestClient, db_session: Session) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        client.delete("/api/v1/ingest/locks/devpilot/devpilot:testorg/testrepo:issue-42")
+        assert (
+            client.post(
+                "/api/v1/ingest/devpilot-executions", json=_execution_payload(2)
+            ).status_code
+            == 201
+        )
+
+    @pytest.mark.parametrize(
+        "status", ["failed", "tests_failed", "needs_clarification", "blocked", "pr_merged"]
+    )
+    def test_terminal_status_frees_the_issue(
+        self, status: str, client: TestClient, db_session: Session
+    ) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        created = client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        client.patch(
+            f"/api/v1/ingest/devpilot-executions/{created.json()['id']}", json={"status": status}
+        )
+        assert (
+            client.post(
+                "/api/v1/ingest/devpilot-executions", json=_execution_payload(2)
+            ).status_code
+            == 201
+        )
+
+    def test_pr_opened_keeps_the_record_active_until_released(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        created = client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        client.patch(
+            f"/api/v1/ingest/devpilot-executions/{created.json()['id']}",
+            json={"status": "pr_opened", "pr_number": 3},
+        )
+        assert (
+            client.post(
+                "/api/v1/ingest/devpilot-executions", json=_execution_payload(2)
+            ).status_code
+            == 409
+        )
+
+    def test_re_ingest_of_the_same_run_is_idempotent(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        again = client.post("/api/v1/ingest/devpilot-executions", json=_execution_payload(1))
+        assert again.status_code == 201
+        assert again.json()["action"] == "already_exists"
+
+
+class TestWorkflowPolicy:
+    def test_exposes_enabled_flags(self, client: TestClient, db_session: Session) -> None:
+        repo = _seed_repo(db_session, _seed_user(db_session).id)
+        repo.devpilot_enabled = True
+        db_session.commit()
+        resp = client.get("/api/v1/policy/testorg/testrepo")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["devpilot_enabled"] is True
+        assert body["review_enabled"] is True
+
+    def test_registered_repo_without_policy_is_still_registered(
+        self, client: TestClient, db_session: Session
+    ) -> None:
+        _seed_repo(db_session, _seed_user(db_session).id)
+        body = client.get("/api/v1/policy/testorg/testrepo").json()
+        assert body["version"] == 0
+        assert body["policy_json"] == {}
+        assert body["devpilot_enabled"] is False  # DevPilot is opt-in
+
+    def test_removed_repo_is_not_registered(self, client: TestClient, db_session: Session) -> None:
+        repo = _seed_repo(db_session, _seed_user(db_session).id)
+        repo.status = "removed"
+        db_session.commit()
+        assert client.get("/api/v1/policy/testorg/testrepo").status_code == 404

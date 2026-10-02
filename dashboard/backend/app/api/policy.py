@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.tables import RepoPolicy, Repository
-from app.schemas.policy import PolicyCreate, PolicyResponse
+from app.schemas.policy import PolicyCreate, PolicyResponse, WorkflowPolicyResponse
 
 router = APIRouter(tags=["policy"])
 
@@ -62,12 +62,12 @@ def create_policy(
     return PolicyResponse.model_validate(policy)
 
 
-@router.get("/policy/{owner}/{repo}", response_model=PolicyResponse)
+@router.get("/policy/{owner}/{repo}", response_model=WorkflowPolicyResponse)
 def get_latest_policy(
     owner: str,
     repo: str,
     db: Session = Depends(get_db),
-) -> PolicyResponse:
+) -> WorkflowPolicyResponse:
     full_name = f"{owner}/{repo}"
     repo_obj = (
         db.query(Repository).filter(Repository.full_name == full_name).first()
@@ -81,7 +81,11 @@ def get_latest_policy(
         .order_by(RepoPolicy.version.desc())
         .first()
     )
-    if not policy:
-        raise HTTPException(status_code=404, detail="No policy found")
-
-    return PolicyResponse.model_validate(policy)
+    # A registered repository without a custom policy is still registered.
+    return WorkflowPolicyResponse(
+        repo_id=repo_obj.id,
+        version=policy.version if policy else 0,
+        policy_json=policy.policy_json if policy else {},
+        review_enabled=repo_obj.review_enabled,
+        devpilot_enabled=repo_obj.devpilot_enabled,
+    )

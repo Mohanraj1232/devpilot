@@ -20,3 +20,13 @@ class PolicyResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class WorkflowPolicyResponse(BaseModel):
+    """Policy as seen by GitHub workflows: registration state plus the latest policy."""
+
+    repo_id: int
+    version: int
+    policy_json: dict
+    review_enabled: bool
+    devpilot_enabled: bool

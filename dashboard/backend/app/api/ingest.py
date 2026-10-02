@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,6 +25,21 @@ from app.schemas.ingest import (
 )
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+# An execution in one of these states no longer holds the per-issue lock.
+TERMINAL_EXECUTION_STATUSES = {
+    "pr_merged",
+    "pr_closed",
+    "failed",
+    "cancelled",
+    "tests_failed",
+    "needs_clarification",
+    "blocked",
+}
+
+
+def execution_lock_key(repo_full_name: str, issue_number: int) -> str:
+    return f"devpilot:{repo_full_name}:issue-{issue_number}"
 
 
 def _get_repo_by_name(db: Session, full_name: str) -> Repository:
@@ -119,7 +135,20 @@ def ingest_execution(body: ExecutionIngest, db: Session = Depends(get_db)) -> di
     if existing:
         return {"id": existing.id, "action": "already_exists"}
 
+    # Active executions hold the per-issue lock (a unique column), so a concurrent second
+    # execution for the same issue is rejected instead of silently running twice.
+    lock_key = (
+        None
+        if body.status in TERMINAL_EXECUTION_STATUSES
+        else execution_lock_key(body.repo_full_name, body.issue_number)
+    )
+    if lock_key and (
+        db.query(DevPilotExecution).filter(DevPilotExecution.lock_key == lock_key).first()
+    ):
+        raise HTTPException(status_code=409, detail="An execution is already active for this issue")
+
     execution = DevPilotExecution(
+        lock_key=lock_key,
         repo_id=repo.id,
         issue_number=body.issue_number,
         issue_hash=body.issue_hash,
@@ -134,7 +163,13 @@ def ingest_execution(body: ExecutionIngest, db: Session = Depends(get_db)) -> di
         failure_reason=body.failure_reason,
     )
     db.add(execution)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="An execution is already active for this issue"
+        ) from exc
     return {"id": execution.id, "action": "created"}
 
 
@@ -164,8 +199,7 @@ def update_execution(
     if body.failure_reason is not None:
         execution.failure_reason = body.failure_reason
 
-    terminal_statuses = {"pr_merged", "pr_closed", "failed", "cancelled"}
-    if body.status in terminal_statuses:
+    if body.status in TERMINAL_EXECUTION_STATUSES:
         execution.finished_at = datetime.now(UTC)
         execution.lock_key = None
 
@@ -175,7 +209,7 @@ def update_execution(
 
 @router.post("/locks/devpilot", response_model=LockResponse)
 def acquire_lock(body: LockRequest, db: Session = Depends(get_db)) -> LockResponse:
-    lock_key = f"devpilot:{body.repo_full_name}:issue-{body.issue_number}"
+    lock_key = execution_lock_key(body.repo_full_name, body.issue_number)
 
     existing = (
         db.query(DevPilotExecution)
@@ -188,7 +222,7 @@ def acquire_lock(body: LockRequest, db: Session = Depends(get_db)) -> LockRespon
     return LockResponse(lock_key=lock_key, acquired=True)
 
 
-@router.delete("/locks/devpilot/{lock_key}")
+@router.delete("/locks/devpilot/{lock_key:path}")
 def release_lock(lock_key: str, db: Session = Depends(get_db)) -> dict:
     execution = (
         db.query(DevPilotExecution)
