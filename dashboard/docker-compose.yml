@@ -28,6 +28,8 @@ services:
       DEVPILOT_GITHUB_CLIENT_ID: ${DEVPILOT_GITHUB_CLIENT_ID:-}
       DEVPILOT_GITHUB_CLIENT_SECRET: ${DEVPILOT_GITHUB_CLIENT_SECRET:-}
       DEVPILOT_BOT_LOGIN: ${DEVPILOT_BOT_LOGIN:-}
+      # Shared secret configured on the GitHub webhook; empty means webhooks are refused.
+      DEVPILOT_WEBHOOK_SECRET: ${DEVPILOT_WEBHOOK_SECRET:-}
     depends_on:
       mysql:
         condition: service_healthy

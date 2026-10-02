@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     # Login of the DevPilot bot account (checked when verifying a repository's setup).
     bot_login: str = ""
+    # Shared secret for GitHub webhooks (X-Hub-Signature-256). Empty = webhooks are refused.
+    webhook_secret: str = ""
     cors_origins: list[str] = ["http://localhost:5173"]
     session_max_age: int = 86400
 

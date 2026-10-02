@@ -12,11 +12,17 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_github, hash_ingest_token, require_repo_admin
+from app.api.deps import (
+    get_github,
+    get_visible_repo,
+    hash_ingest_token,
+    require_repo_admin,
+    require_user,
+)
 from app.config import Settings
 from app.database import get_db
 from app.github_client import GitHubUserClient
-from app.models.tables import IngestToken, Repository
+from app.models.tables import IngestToken, Repository, User
 from app.schemas.repos import RepoCreate, RepoResponse, RepoUpdate, RepoVerification
 from app.verification import verify_repository
 
@@ -38,8 +44,16 @@ def _get_active_repo(db: Session, repo_id: int) -> Repository:
 
 
 @router.get("", response_model=list[RepoResponse])
-def list_repos(db: Session = Depends(get_db)) -> list[RepoResponse]:
-    repos = db.query(Repository).filter(Repository.status != "removed").all()
+def list_repos(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+) -> list[RepoResponse]:
+    """The repositories this user registered."""
+    repos = (
+        db.query(Repository)
+        .filter(Repository.registered_by == user.id, Repository.status == "active")
+        .all()
+    )
     return [RepoResponse.model_validate(r) for r in repos]
 
 
@@ -83,8 +97,12 @@ def register_repo(
 
 
 @router.get("/{repo_id}", response_model=RepoResponse)
-def get_repo(repo_id: int, db: Session = Depends(get_db)) -> RepoResponse:
-    return RepoResponse.model_validate(_get_active_repo(db, repo_id))
+def get_repo(
+    repo_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+) -> RepoResponse:
+    return RepoResponse.model_validate(get_visible_repo(db, user, repo_id))
 
 
 @router.patch("/{repo_id}", response_model=RepoResponse)

@@ -6,10 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import ensure_token_repo, get_github, get_ingest_token, require_repo_admin
+from app.api.deps import (
+    ensure_token_repo,
+    get_github,
+    get_ingest_token,
+    get_visible_repo,
+    require_repo_admin,
+    require_user,
+)
 from app.database import get_db
 from app.github_client import GitHubUserClient
-from app.models.tables import IngestToken, RepoPolicy, Repository
+from app.models.tables import IngestToken, RepoPolicy, Repository, User
 from app.schemas.policy import PolicyCreate, PolicyResponse, WorkflowPolicyResponse
 
 router = APIRouter(tags=["policy"])
@@ -23,7 +30,12 @@ def _get_current_user_id(request: Request) -> int:
 
 
 @router.get("/repos/{repo_id}/policy", response_model=list[PolicyResponse])
-def list_policies(repo_id: int, db: Session = Depends(get_db)) -> list[PolicyResponse]:
+def list_policies(
+    repo_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+) -> list[PolicyResponse]:
+    get_visible_repo(db, user, repo_id)
     policies = (
         db.query(RepoPolicy)
         .filter(RepoPolicy.repo_id == repo_id)

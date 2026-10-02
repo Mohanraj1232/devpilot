@@ -52,7 +52,8 @@ class TestHealth:
 
 
 class TestRepos:
-    def test_list_repos_empty(self, client: TestClient) -> None:
+    def test_list_repos_empty(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/repos")
         assert resp.status_code == 200
         assert resp.json() == []
@@ -73,7 +74,8 @@ class TestRepos:
         assert fetched.status_code == 200
         assert fetched.json()["full_name"] == "org/repo"
 
-    def test_get_repo_not_found(self, client: TestClient) -> None:
+    def test_get_repo_not_found(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/repos/999")
         assert resp.status_code == 404
 
@@ -84,11 +86,13 @@ class TestReviewRuns:
     ) -> None:
         user = _seed_user(db_session)
         repo = _seed_repo(db_session, user.id)
+        login(client, user.id)
         resp = client.get(f"/api/v1/repos/{repo.id}/review-runs")
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_get_review_run_not_found(self, client: TestClient) -> None:
+    def test_get_review_run_not_found(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/review-runs/999")
         assert resp.status_code == 404
 
@@ -184,40 +188,35 @@ class TestLocks:
 
 
 class TestWebhooks:
-    def test_webhook_missing_delivery(self, client: TestClient) -> None:
-        resp = client.post(
-            "/api/v1/webhooks/github",
-            json={},
-            headers={"X-GitHub-Event": "ping"},
-        )
+    """Signature and scoping are covered in test_dashboard_authz.py; basic delivery here."""
+
+    def test_webhook_missing_delivery(self, client: TestClient, webhook) -> None:  # type: ignore[no-untyped-def]
+        resp = webhook("ping", {}, delivery_id="")
         assert resp.status_code == 400
 
-    def test_webhook_idempotency(
-        self, client: TestClient, db_session: Session
-    ) -> None:
-        headers = {
-            "X-GitHub-Delivery": "delivery-001",
-            "X-GitHub-Event": "ping",
-        }
-        resp1 = client.post("/api/v1/webhooks/github", json={}, headers=headers)
+    def test_webhook_idempotency(self, client: TestClient, webhook) -> None:  # type: ignore[no-untyped-def]
+        resp1 = webhook("ping", {}, delivery_id="delivery-001")
         assert resp1.status_code == 200
 
-        resp2 = client.post("/api/v1/webhooks/github", json={}, headers=headers)
+        resp2 = webhook("ping", {}, delivery_id="delivery-001")
         assert resp2.status_code == 200
         assert resp2.json()["status"] == "already_processed"
 
 
 class TestAnalytics:
-    def test_findings_over_time_empty(self, client: TestClient) -> None:
+    def test_findings_over_time_empty(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/analytics/findings-over-time")
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_categories_empty(self, client: TestClient) -> None:
+    def test_categories_empty(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/analytics/categories")
         assert resp.status_code == 200
 
-    def test_devpilot_success_rate(self, client: TestClient) -> None:
+    def test_devpilot_success_rate(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/analytics/devpilot-success")
         assert resp.status_code == 200
         data = resp.json()
@@ -231,6 +230,7 @@ class TestPolicy:
     ) -> None:
         user = _seed_user(db_session)
         repo = _seed_repo(db_session, user.id)
+        login(client, user.id)
         resp = client.get(f"/api/v1/repos/{repo.id}/policy")
         assert resp.status_code == 200
         assert resp.json() == []
@@ -249,11 +249,13 @@ class TestExecutions:
     ) -> None:
         user = _seed_user(db_session)
         repo = _seed_repo(db_session, user.id)
+        login(client, user.id)
         resp = client.get(f"/api/v1/repos/{repo.id}/devpilot-executions")
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_get_execution_not_found(self, client: TestClient) -> None:
+    def test_get_execution_not_found(self, client: TestClient, db_session: Session) -> None:
+        login(client, _seed_user(db_session).id)
         resp = client.get("/api/v1/devpilot-executions/999")
         assert resp.status_code == 404
 

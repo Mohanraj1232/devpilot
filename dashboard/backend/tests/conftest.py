@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 from collections.abc import Generator
@@ -143,3 +145,36 @@ def authed_client(client: TestClient, db_session: Session) -> TestClient:
 
 def _noop() -> Generator[None, None, None]:
     yield
+
+
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
+def sign_webhook(body: bytes, secret: str = WEBHOOK_SECRET) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+@pytest.fixture
+def webhook(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Send a correctly signed GitHub webhook delivery."""
+    monkeypatch.setenv("DEVPILOT_WEBHOOK_SECRET", WEBHOOK_SECRET)
+
+    def send(
+        event: str,
+        payload: dict[str, Any],
+        *,
+        delivery_id: str = "d-1",
+        signature: str | None = None,
+        raw: bytes | None = None,
+    ) -> Any:
+        body = raw if raw is not None else json.dumps(payload).encode()
+        headers = {
+            "X-GitHub-Event": event,
+            "X-Hub-Signature-256": signature if signature is not None else sign_webhook(body),
+            "Content-Type": "application/json",
+        }
+        if delivery_id:
+            headers["X-GitHub-Delivery"] = delivery_id
+        return client.post("/api/v1/webhooks/github", content=body, headers=headers)
+
+    return send

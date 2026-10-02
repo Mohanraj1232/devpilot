@@ -1,18 +1,24 @@
-"""DevPilot execution monitoring routes."""
+"""DevPilot execution monitoring routes (login required; scoped to the user's repositories)."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_visible_repo, require_user, visible_repo_ids
 from app.database import get_db
-from app.models.tables import DevPilotExecution
+from app.models.tables import DevPilotExecution, User
 
 router = APIRouter(tags=["executions"])
 
 
 @router.get("/repos/{repo_id}/devpilot-executions")
-def list_executions(repo_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def list_executions(
+    repo_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+) -> list[dict]:
+    get_visible_repo(db, user, repo_id)
     executions = (
         db.query(DevPilotExecution)
         .filter(DevPilotExecution.repo_id == repo_id)
@@ -37,10 +43,17 @@ def list_executions(repo_id: int, db: Session = Depends(get_db)) -> list[dict]:
 
 
 @router.get("/devpilot-executions/{execution_id}")
-def get_execution(execution_id: int, db: Session = Depends(get_db)) -> dict:
+def get_execution(
+    execution_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+) -> dict:
     execution = (
         db.query(DevPilotExecution)
-        .filter(DevPilotExecution.id == execution_id)
+        .filter(
+            DevPilotExecution.id == execution_id,
+            DevPilotExecution.repo_id.in_(visible_repo_ids(db, user)),
+        )
         .first()
     )
     if not execution:

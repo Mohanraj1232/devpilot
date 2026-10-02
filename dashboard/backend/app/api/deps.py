@@ -13,7 +13,46 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import get_db
 from app.github_client import GitHubUserClient
-from app.models.tables import IngestToken
+from app.models.tables import IngestToken, Repository, User
+
+
+def require_user(request: Request, db: Session = Depends(get_db)) -> User:
+    """The logged-in dashboard user (401 if there is no valid session)."""
+    user_id = request.session.get("user_id")
+    user = db.query(User).filter(User.id == user_id).first() if user_id else None
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def visible_repo_ids(db: Session, user: User) -> list[int]:
+    """Repositories whose data this user may see: the active ones they registered.
+
+    Review findings and execution history describe private code, so they are never shown
+    to other logged-in users.
+    """
+    rows = (
+        db.query(Repository.id)
+        .filter(Repository.registered_by == user.id, Repository.status == "active")
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
+def get_visible_repo(db: Session, user: User, repo_id: int) -> Repository:
+    """The repository, or 404 (not 403, to avoid revealing which repositories exist)."""
+    repo = (
+        db.query(Repository)
+        .filter(
+            Repository.id == repo_id,
+            Repository.registered_by == user.id,
+            Repository.status == "active",
+        )
+        .first()
+    )
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repo
 
 
 def get_github(request: Request) -> GitHubUserClient:
