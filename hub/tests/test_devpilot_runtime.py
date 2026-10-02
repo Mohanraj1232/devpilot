@@ -502,3 +502,61 @@ class TestRealGitleaks:
         result = scan_diff_text(_diff(f'token = "{self.TOKEN}"'), repo, require_gitleaks=True)
         assert result.clean is False
         assert result.gitleaks_ran is True
+
+
+# ── identity and rebase failure classification (found by real CI) ──
+
+
+class TestCommitIdentity:
+    """A CI runner has no git identity; commits and rebases must still work."""
+
+    def test_commit_without_an_identity_uses_the_default(self, repo: Path) -> None:
+        (repo / "b.txt").write_text("b")
+        git_ops.stage_and_commit(repo, "Add b")
+        author = _git(repo, "log", "-1", "--format=%an <%ae>").strip()
+        assert author == f"{git_ops.DEFAULT_IDENTITY[0]} <{git_ops.DEFAULT_IDENTITY[1]}>"
+
+    def test_test_environment_really_has_no_ambient_identity(self, repo: Path) -> None:
+        # Guards the CI-like fixture: git must refuse to guess an identity.
+        (repo / "x.txt").write_text("x")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "commit", "-m", "no identity"], cwd=repo, capture_output=True, text=True
+        )
+        assert result.returncode != 0
+
+    def _origin_with_moved_main(self, repo: Path, tmp_path: Path) -> None:
+        origin = tmp_path / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True
+        )
+        _git(repo, "remote", "add", "origin", origin.as_posix())
+        _git(repo, "push", "origin", "main")
+        git_ops.create_branch(repo, "work")
+        (repo / "mine.txt").write_text("m")
+        git_ops.stage_and_commit(repo, "mine", identity=("bot", "bot@example.com"))
+        other = tmp_path / "other"
+        subprocess.run(
+            ["git", "clone", origin.as_posix(), str(other)], check=True, capture_output=True
+        )
+        (other / "theirs.txt").write_text("t")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-m", "theirs")
+        _git(other, "push", "origin", "main")
+
+    def test_rebase_uses_the_supplied_identity_as_committer(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._origin_with_moved_main(repo, tmp_path)
+        assert git_ops.rebase_on_base(repo, "main", identity=("bot", "bot@example.com")) is True
+        assert _git(repo, "log", "-1", "--format=%cn <%ce>").strip() == "bot <bot@example.com>"
+
+    def test_a_rebase_that_fails_for_another_reason_is_not_reported_as_a_conflict(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._origin_with_moved_main(repo, tmp_path)
+        (repo / "mine.txt").write_text("uncommitted change")  # git refuses to rebase a dirty tree
+        with pytest.raises(GitError) as exc:
+            git_ops.rebase_on_base(repo, "main")
+        assert exc.value.reason.value == "commit_failed"
+        assert "Rebase failed" in exc.value.message

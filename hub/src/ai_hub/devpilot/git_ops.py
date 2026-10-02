@@ -26,6 +26,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger("ai_hub.devpilot")
 
 
+DEFAULT_IDENTITY = ("DevPilot", "devpilot@users.noreply.github.com")
+
+
+def identity_env(identity: tuple[str, str] | None) -> dict[str, str]:
+    """Environment that supplies a commit author/committer.
+
+    Commits and rebases fail on a machine with no git identity (every CI runner), so one is
+    always provided; the DevPilot bot's own identity is passed in by the orchestrator.
+    """
+    name, email = identity or DEFAULT_IDENTITY
+    env = dict(os.environ)
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name,
+            "GIT_COMMITTER_EMAIL": email,
+        }
+    )
+    return env
+
+
 def git_auth_env(token: str, *, server_url: str = "https://github.com") -> dict[str, str]:
     """Environment that authenticates git over HTTPS without writing the token to disk or argv."""
     credentials = base64.b64encode(f"x-access-token:{token}".encode()).decode()
@@ -236,20 +258,7 @@ def stage_and_commit(
     if execution_id:
         message += f"\n\nDevPilot-Execution: {execution_id}"
 
-    env: dict[str, str] | None = None
-    if identity:
-        name, email = identity
-        env = dict(os.environ)
-        env.update(
-            {
-                "GIT_AUTHOR_NAME": name,
-                "GIT_AUTHOR_EMAIL": email,
-                "GIT_COMMITTER_NAME": name,
-                "GIT_COMMITTER_EMAIL": email,
-            }
-        )
-
-    result = _run_git(["commit", "-m", message], cwd=repo_path, env=env)
+    result = _run_git(["commit", "-m", message], cwd=repo_path, env=identity_env(identity))
     if result.returncode != 0:
         raise _fail(FailureReason.COMMIT_FAILED, "Commit failed", result)
 
@@ -264,14 +273,29 @@ def push_branch(repo_path: Path, branch_name: str, *, env: Mapping[str, str] | N
 
 
 def rebase_on_base(
-    repo_path: Path, base_branch: str, *, env: Mapping[str, str] | None = None
+    repo_path: Path,
+    base_branch: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    identity: tuple[str, str] | None = None,
 ) -> bool:
-    """Rebase the current branch on the base. Returns False on conflict (rebase is aborted)."""
+    """Rebase the current branch on the base.
+
+    Returns False on a merge conflict (the rebase is aborted and the tree left clean).
+    Any other failure raises GitError: a rebase *rewrites commits*, so it needs a committer
+    identity (CI runners have none) and must not be mistaken for a conflict.
+    """
     fetch = _run_git(["fetch", "origin", base_branch], cwd=repo_path, timeout=300, env=env)
     if fetch.returncode != 0:
         raise _fail(FailureReason.REPO_INACCESSIBLE, "Fetch failed", fetch)
-    result = _run_git(["rebase", f"origin/{base_branch}"], cwd=repo_path)
-    if result.returncode != 0:
-        _run_git(["rebase", "--abort"], cwd=repo_path)
+    result = _run_git(
+        ["rebase", f"origin/{base_branch}"], cwd=repo_path, env=identity_env(identity)
+    )
+    if result.returncode == 0:
+        return True
+
+    unmerged = _run_git(["diff", "--name-only", "--diff-filter=U"], cwd=repo_path).stdout.strip()
+    _run_git(["rebase", "--abort"], cwd=repo_path)
+    if unmerged:
         return False
-    return True
+    raise _fail(FailureReason.COMMIT_FAILED, "Rebase failed", result)

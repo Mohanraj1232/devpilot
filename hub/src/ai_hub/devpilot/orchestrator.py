@@ -776,7 +776,9 @@ class DevPilotRunner:
 
         if current_base != self.base_sha:
             self._step("Base branch moved; rebasing")
-            if not rebase_on_base(ws, self.base_branch, env=self.git_env):
+            if not rebase_on_base(
+                ws, self.base_branch, env=self.git_env, identity=self._bot_identity
+            ):
                 raise self._stop(
                     ExecutionStatus.FAILED,
                     FailureReason.REBASE_CONFLICT,
