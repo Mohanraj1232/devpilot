@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
-from ai_hub.analysis.base import ToolAdapter, run_tool_subprocess
+from ai_hub.analysis.base import ToolAdapter, parse_json_output, run_tool_subprocess
+from ai_hub.errors import AnalysisError, FailureReason
 from ai_hub.models import Finding, FindingCategory, FindingSource, Severity
 
 if TYPE_CHECKING:
@@ -23,24 +23,24 @@ class PipAuditAdapter(ToolAdapter):
     name = "pip-audit"
     tool_cmd = "pip-audit"
 
+    def applicable(
+        self, repo_path: Path, changed_files: list[str] | None = None
+    ) -> tuple[bool, str]:
+        # `pip-audit --local` would audit the CI runner's own packages, which says nothing
+        # about the repository, so only a requirements file is audited.
+        if not (repo_path / "requirements.txt").is_file():
+            return False, "No requirements.txt"
+        return True, ""
+
     def run(self, repo_path: Path, changed_files: list[str] | None = None) -> list[Finding]:
-        cmd = ["pip-audit", "--format=json", "--desc"]
-
         requirements = repo_path / "requirements.txt"
-        if requirements.is_file():
-            cmd.extend(["--requirement", str(requirements)])
-        else:
-            cmd.append("--local")
-
-        result = run_tool_subprocess(cmd, cwd=repo_path)
-
-        if not result.stdout.strip():
+        if not requirements.is_file():
             return []
+        cmd = ["pip-audit", "--format=json", "--desc", "--requirement", str(requirements)]
 
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return []
+        # Exit 0 = no vulnerabilities, 1 = vulnerabilities found; other codes = tool failure.
+        result = run_tool_subprocess(cmd, cwd=repo_path, ok_returncodes=(0, 1))
+        data = parse_json_output(result, "pip-audit")
 
         findings: list[Finding] = []
         for vuln in data.get("dependencies", []):
@@ -71,21 +71,29 @@ class NpmAuditAdapter(ToolAdapter):
     name = "npm-audit"
     tool_cmd = "npm"
 
+    def applicable(
+        self, repo_path: Path, changed_files: list[str] | None = None
+    ) -> tuple[bool, str]:
+        if not (repo_path / "package.json").is_file():
+            return False, "No package.json"
+        if not (repo_path / "package-lock.json").is_file():
+            return False, "No package-lock.json (npm audit needs a lockfile)"
+        return True, ""
+
     def run(self, repo_path: Path, changed_files: list[str] | None = None) -> list[Finding]:
         package_json = repo_path / "package.json"
         if not package_json.is_file():
             return []
 
         cmd = ["npm", "audit", "--json"]
-        result = run_tool_subprocess(cmd, cwd=repo_path)
-
-        if not result.stdout.strip():
-            return []
-
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return []
+        # Exit 0 = no vulnerabilities, 1 = vulnerabilities found; other codes = tool failure.
+        result = run_tool_subprocess(cmd, cwd=repo_path, ok_returncodes=(0, 1))
+        data = parse_json_output(result, "npm audit")
+        if isinstance(data, dict) and data.get("error"):
+            raise AnalysisError(
+                FailureReason.TOOL_CRASH,
+                f"npm audit failed: {str(data['error'].get('summary', ''))[:200]}",
+            )
 
         findings: list[Finding] = []
         vulnerabilities = data.get("vulnerabilities", {})

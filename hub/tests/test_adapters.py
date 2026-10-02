@@ -47,14 +47,23 @@ class TestRuffAdapter:
         assert findings[0].severity == Severity.HIGH
         assert findings[0].source == FindingSource.STATIC
 
-    def test_empty_output(self, tmp_path: Path) -> None:
+    def test_clean_run_prints_an_empty_list(self, tmp_path: Path) -> None:
         with patch(
             "ai_hub.analysis.static.ruff.run_tool_subprocess",
-            return_value=type("R", (), {"stdout": "", "stderr": "", "returncode": 0})(),
+            return_value=type("R", (), {"stdout": "[]", "stderr": "", "returncode": 0})(),
         ):
-            adapter = RuffAdapter()
-            findings = adapter.run(tmp_path)
-        assert findings == []
+            assert RuffAdapter().run(tmp_path) == []
+
+    def test_empty_output_is_an_error_not_a_clean_result(self, tmp_path: Path) -> None:
+        # A linter that prints nothing did not run properly; "clean" would hide that.
+        with (
+            patch(
+                "ai_hub.analysis.static.ruff.run_tool_subprocess",
+                return_value=type("R", (), {"stdout": "", "stderr": "", "returncode": 0})(),
+            ),
+            pytest.raises(AnalysisError, match="no output"),
+        ):
+            RuffAdapter().run(tmp_path)
 
     def test_fix_suggestion_captured(self, tmp_path: Path) -> None:
         with patch(
@@ -163,11 +172,23 @@ class TestBanditAdapter:
         assert b301.confidence == 0.9
 
 
+def _gitleaks_run(report_text: str | None, returncode: int = 1):
+    """Fake run_tool_subprocess that writes the report file the way gitleaks does."""
+
+    def fake(cmd, cwd, **kwargs):
+        if report_text is not None:
+            Path(cmd[cmd.index("--report-path") + 1]).write_text(report_text)
+        return type("R", (), {"stdout": "", "stderr": "", "returncode": returncode})()
+
+    return fake
+
+
 class TestGitleaksAdapter:
     def test_parse_findings(self, tmp_path: Path) -> None:
+        report = (FIXTURES / "gitleaks_output.json").read_text()
         with patch(
             "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
-            return_value=_mock_subprocess("gitleaks_output.json"),
+            side_effect=_gitleaks_run(report),
         ):
             findings = GitleaksAdapter().run(tmp_path)
 
@@ -176,12 +197,72 @@ class TestGitleaksAdapter:
         assert findings[0].rule_id == "aws-access-key-id"
         assert findings[1].rule_id == "github-pat"
 
-    def test_null_output(self, tmp_path: Path) -> None:
+    def test_secret_values_never_appear_in_findings(self, tmp_path: Path) -> None:
+        report = (
+            '[{"RuleID": "github-pat", "File": "a.py", "StartLine": 1, "EndLine": 1,'
+            ' "Description": "token", "Match": "ghp_SHOULDNOTLEAK", "Secret": "ghp_SHOULDNOTLEAK"}]'
+        )
         with patch(
             "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
-            return_value=type("R", (), {"stdout": "null", "stderr": "", "returncode": 0})(),
+            side_effect=_gitleaks_run(report),
+        ):
+            findings = GitleaksAdapter().run(tmp_path)
+        assert "SHOULDNOTLEAK" not in findings[0].model_dump_json()
+
+    def test_redaction_flag_is_always_passed(self, tmp_path: Path) -> None:
+        seen: list[list[str]] = []
+
+        def fake(cmd, cwd, **kwargs):
+            seen.append(cmd)
+            return _gitleaks_run("[]", 0)(cmd, cwd)
+
+        with patch("ai_hub.analysis.security.gitleaks.run_tool_subprocess", side_effect=fake):
+            GitleaksAdapter().run(tmp_path)
+        assert "--redact" in seen[0]
+        # `--no-git --pipe` silently scans nothing, and this is a directory scan anyway.
+        assert "--pipe" not in seen[0]
+
+    def test_clean_scan(self, tmp_path: Path) -> None:
+        with patch(
+            "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
+            side_effect=_gitleaks_run("[]", 0),
         ):
             assert GitleaksAdapter().run(tmp_path) == []
+
+    def test_null_report_is_clean(self, tmp_path: Path) -> None:
+        with patch(
+            "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
+            side_effect=_gitleaks_run("null", 0),
+        ):
+            assert GitleaksAdapter().run(tmp_path) == []
+
+    def test_exit_1_without_a_report_is_a_failed_scan_not_a_clean_one(self, tmp_path: Path) -> None:
+        # gitleaks exits 1 both for "leaks found" and for an unreadable source.
+        with (
+            patch(
+                "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
+                side_effect=_gitleaks_run(None, 1),
+            ),
+            pytest.raises(AnalysisError, match="did not produce a report"),
+        ):
+            GitleaksAdapter().run(tmp_path)
+
+    def test_corrupt_report_is_an_error(self, tmp_path: Path) -> None:
+        with (
+            patch(
+                "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
+                side_effect=_gitleaks_run("{not json", 1),
+            ),
+            pytest.raises(AnalysisError, match="not valid JSON"),
+        ):
+            GitleaksAdapter().run(tmp_path)
+
+    def test_check_reports_error_status(self, tmp_path: Path) -> None:
+        with patch(
+            "ai_hub.analysis.security.gitleaks.run_tool_subprocess",
+            side_effect=_gitleaks_run(None, 1),
+        ):
+            assert GitleaksAdapter().check(tmp_path).status.value == "error"
 
 
 class TestPipAuditAdapter:
@@ -199,6 +280,7 @@ class TestPipAuditAdapter:
         assert "2.31.0" in (findings[0].suggested_fix or "")
 
     def test_no_vulns(self, tmp_path: Path) -> None:
+        (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
         with patch(
             "ai_hub.analysis.security.deps.run_tool_subprocess",
             return_value=type(

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
-from ai_hub.analysis.base import ToolAdapter, run_tool_subprocess
+from ai_hub.analysis.base import (
+    ToolAdapter,
+    parse_json_output,
+    run_tool_subprocess,
+    select_files,
+)
 from ai_hub.models import Finding, FindingCategory, FindingSource, Severity
 
 if TYPE_CHECKING:
@@ -28,22 +32,22 @@ class BanditAdapter(ToolAdapter):
     name = "bandit"
     tool_cmd = "bandit"
 
+    def applicable(
+        self, repo_path: Path, changed_files: list[str] | None = None
+    ) -> tuple[bool, str]:
+        files = select_files(changed_files, (".py",))
+        if files is not None and not files:
+            return False, "No Python files changed"
+        return True, ""
+
     def run(self, repo_path: Path, changed_files: list[str] | None = None) -> list[Finding]:
-        cmd = ["bandit", "-f", "json", "-r"]
-        if changed_files:
-            cmd.extend(changed_files)
-        else:
-            cmd.append(".")
+        cmd = ["bandit", "-f", "json", "-q", "-r"]
+        files = select_files(changed_files, (".py",))
+        cmd.extend(files if files else ["."])
 
-        result = run_tool_subprocess(cmd, cwd=repo_path)
-
-        if not result.stdout.strip():
-            return []
-
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return []
+        # Exit 0 = clean, 1 = issues found; anything else means Bandit itself failed.
+        result = run_tool_subprocess(cmd, cwd=repo_path, ok_returncodes=(0, 1))
+        data = parse_json_output(result, "bandit")
 
         findings: list[Finding] = []
         for item in data.get("results", []):
@@ -59,7 +63,7 @@ class BanditAdapter(ToolAdapter):
                     severity=severity,
                     file=item.get("filename", ""),
                     line_start=item.get("line_number", 0),
-                    line_end=item.get("end_col_offset"),
+                    line_end=max(item.get("line_range") or [item.get("line_number", 0)]),
                     title=f"{item.get('test_id', '')}: {item.get('issue_text', '')}",
                     explanation=item.get("issue_text", ""),
                     confidence=confidence,

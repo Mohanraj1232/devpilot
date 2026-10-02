@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
-from ai_hub.analysis.base import ToolAdapter, run_tool_subprocess
+from ai_hub.analysis.base import (
+    ToolAdapter,
+    parse_json_output,
+    run_tool_subprocess,
+    select_files,
+)
 from ai_hub.models import Finding, FindingCategory, FindingSource, Severity
 
 if TYPE_CHECKING:
@@ -43,26 +47,29 @@ def _classify_rule(code: str) -> tuple[Severity, FindingCategory]:
     return Severity.MEDIUM, FindingCategory.STYLE
 
 
+_PY_EXTENSIONS = (".py", ".pyi")
+
+
 class RuffAdapter(ToolAdapter):
     name = "ruff"
     tool_cmd = "ruff"
 
+    def applicable(
+        self, repo_path: Path, changed_files: list[str] | None = None
+    ) -> tuple[bool, str]:
+        files = select_files(changed_files, _PY_EXTENSIONS)
+        if files is not None and not files:
+            return False, "No Python files changed"
+        return True, ""
+
     def run(self, repo_path: Path, changed_files: list[str] | None = None) -> list[Finding]:
-        cmd = ["ruff", "check", "--output-format=json", "--no-fix"]
-        if changed_files:
-            cmd.extend(changed_files)
-        else:
-            cmd.append(".")
+        cmd = ["ruff", "check", "--output-format=json", "--no-fix", "--no-cache"]
+        files = select_files(changed_files, _PY_EXTENSIONS)
+        cmd.extend(files if files else ["."])
 
-        result = run_tool_subprocess(cmd, cwd=repo_path)
-
-        if not result.stdout.strip():
-            return []
-
-        try:
-            raw_findings = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return []
+        # Exit 0 = clean, 1 = findings, 2 = ruff itself failed (bad config, crash).
+        result = run_tool_subprocess(cmd, cwd=repo_path, ok_returncodes=(0, 1))
+        raw_findings = parse_json_output(result, "ruff")
 
         findings: list[Finding] = []
         for item in raw_findings:
