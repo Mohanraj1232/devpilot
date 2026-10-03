@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
+
+from ai_hub.errors import AuthError, FailureReason, HubError
+from ai_hub.safety.redact import redact
 
 logger = logging.getLogger("ai_hub.telemetry")
 
@@ -34,6 +38,26 @@ class RepoLookup:
     def policy_json(self) -> dict[str, Any]:
         value = (self.policy or {}).get("policy_json")
         return value if isinstance(value, dict) else {}
+
+
+@dataclass(frozen=True)
+class InstallationToken:
+    """A short-lived GitHub App token for one repository, plus the bot's identity."""
+
+    token: str
+    expires_at: datetime
+    bot_login: str
+    bot_user_id: int
+
+    def __repr__(self) -> str:  # never print the token
+        return f"InstallationToken(bot_login={self.bot_login!r}, expires_at={self.expires_at})"
+
+
+def _detail(resp: httpx.Response) -> str:
+    try:
+        return redact(str(resp.json().get("detail", "")))[:300]
+    except (ValueError, AttributeError):
+        return ""
 
 
 def _error_result(exc: httpx.HTTPError) -> dict[str, Any]:
@@ -127,6 +151,59 @@ class DashboardClient:
         except httpx.HTTPError as exc:
             logger.warning("Policy fetch failed: %s", exc)
             return None
+
+    def request_installation_token(self, repo_full_name: str) -> InstallationToken:
+        """Ask the dashboard for a one-hour GitHub App token limited to this repository.
+
+        Raises HubError with a specific reason (it never returns a partial result), because
+        DevPilot cannot do anything on GitHub without it.
+        """
+        try:
+            resp = httpx.post(
+                f"{self._base}/api/v1/ingest/installation-token",
+                json={"repo_full_name": repo_full_name},
+                headers=self._headers,
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as exc:
+            raise HubError(
+                FailureReason.DASHBOARD_UNREACHABLE, "The dashboard could not be reached"
+            ) from exc
+
+        detail = _detail(resp)
+        if resp.status_code == 401:
+            raise AuthError(
+                FailureReason.AUTH_FAILURE,
+                "The dashboard rejected this repository's token "
+                "(revoked, or issued for another repository)",
+            )
+        if resp.status_code == 403:
+            raise HubError(FailureReason.REPO_DISABLED, detail or "DevPilot is disabled")
+        if resp.status_code == 404:
+            raise HubError(FailureReason.REPO_NOT_REGISTERED, detail or "Repository not registered")
+        if resp.status_code == 409:
+            raise HubError(
+                FailureReason.BOT_NOT_COLLABORATOR,
+                detail or "The GitHub App is not installed on this repository",
+            )
+        if resp.status_code != 200:
+            raise HubError(
+                FailureReason.DASHBOARD_UNREACHABLE,
+                f"The dashboard could not issue a token (HTTP {resp.status_code}): {detail}",
+            )
+        try:
+            data = resp.json()
+            return InstallationToken(
+                token=str(data["token"]),
+                expires_at=datetime.fromisoformat(str(data["expires_at"]).replace("Z", "+00:00")),
+                bot_login=str(data["bot_login"]),
+                bot_user_id=int(data["bot_user_id"]),
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HubError(
+                FailureReason.DASHBOARD_UNREACHABLE,
+                "The dashboard returned an invalid token response",
+            ) from exc
 
     def lookup_repository(self, owner: str, repo: str) -> RepoLookup:
         """Look up registration and policy. Distinguishes "not registered" from "unreachable"."""

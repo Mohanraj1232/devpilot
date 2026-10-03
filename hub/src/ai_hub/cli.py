@@ -385,17 +385,16 @@ def devpilot(
     import uuid
 
     from ai_hub.devpilot.orchestrator import DevPilotRunner, DevPilotSettings
+    from ai_hub.devpilot.token_source import choose_token_source
+    from ai_hub.errors import HubError
     from ai_hub.github.client import GitHubClient
     from ai_hub.llm.bedrock import BedrockClient
     from ai_hub.telemetry.dashboard_client import DashboardClient
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    token = os.environ.get("DEVPILOT_BOT_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+    pat = os.environ.get("DEVPILOT_BOT_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     model_id = os.environ.get("BEDROCK_MODEL_ID", "")
-    if not token:
-        console.print("[red]DEVPILOT_BOT_TOKEN is not set; cannot act as the DevPilot bot.[/]")
-        raise typer.Exit(code=1)
     if not model_id:
         console.print("[red]BEDROCK_MODEL_ID is not set.[/]")
         raise typer.Exit(code=1)
@@ -414,12 +413,19 @@ def devpilot(
         else None
     )
 
+    try:
+        tokens, auth_mode = choose_token_source(pat, dashboard, repo)
+    except HubError as exc:
+        console.print(f"[red]{exc.message}[/]")
+        raise typer.Exit(code=1) from None
+    console.print(f"Authenticating as: {auth_mode}")
+
     settings = DevPilotSettings(
         repo=repo,
         issue_number=issue,
         workspace=workspace,
         execution_id=uuid.uuid4().hex[:16],
-        git_token=token,
+        token_source=tokens,
         artifacts_dir=artifacts.resolve(),
         config_path=config_path,
         workflow_run_id=int(run_id) if run_id.isdigit() else 0,
@@ -430,7 +436,8 @@ def devpilot(
     )
     runner = DevPilotRunner(
         settings,
-        gh=GitHubClient(token, repo, api_url=api_url),
+        # The client asks the source for a token on every request, so app tokens refresh.
+        gh=GitHubClient(tokens.token, repo, api_url=api_url),
         llm=BedrockClient(model_id, region=os.environ.get("AWS_REGION"), max_tokens=8192),
         dashboard=dashboard,
     )
@@ -444,6 +451,20 @@ def devpilot(
             title="DevPilot result",
         )
     )
+    # Always visible in the run, even when no comment could be posted on the issue (for example
+    # when the dashboard refused to issue a token because DevPilot is disabled).
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        from ai_hub.safety.redact import redact
+
+        with open(step_summary, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"### DevPilot: {outcome.status.value}\n\n"
+                f"- Reason: `{outcome.failure_reason or '-'}`\n"
+                f"- Authenticated as: {auth_mode}\n"
+                f"- Pull request: {outcome.pr_url or '-'}\n\n"
+                f"{redact(outcome.message)}\n"
+            )
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as fh:

@@ -40,7 +40,7 @@ class GitHubClient:
 
     def __init__(
         self,
-        token: str,
+        token: str | Callable[[], str],
         repo_full_name: str,
         *,
         api_url: str = "https://api.github.com",
@@ -51,6 +51,8 @@ class GitHubClient:
     ) -> None:
         if not token:
             raise AuthError(FailureReason.TOKEN_MISSING, "GitHub token is not set")
+        # A provider is called for every request so short-lived tokens can be refreshed.
+        self._token_for_request: Callable[[], str] = token if callable(token) else (lambda: token)
         if repo_full_name.count("/") != 1:
             raise GitHubError(
                 FailureReason.REPO_INACCESSIBLE, f"Invalid repository name: {repo_full_name}"
@@ -61,7 +63,6 @@ class GitHubClient:
         self._http = httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={
-                "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "User-Agent": "devpilot-ai-hub",
@@ -89,7 +90,13 @@ class GitHubClient:
         while True:
             attempt += 1
             try:
-                response = self._http.request(method, path, json=json, params=params)
+                response = self._http.request(
+                    method,
+                    path,
+                    json=json,
+                    params=params,
+                    headers={"Authorization": f"Bearer {self._token_for_request()}"},
+                )
             except httpx.TransportError as exc:
                 if attempt <= self._max_retries:
                     self._sleep(min(2.0**attempt, 20.0))

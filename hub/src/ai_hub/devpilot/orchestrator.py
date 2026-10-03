@@ -48,6 +48,7 @@ from ai_hub.devpilot.preflight import check_clean_tree, run_preflight_checks
 from ai_hub.devpilot.repo_map import build_repo_map
 from ai_hub.devpilot.secret_scan import scan_staged_diff
 from ai_hub.devpilot.tester import RepairResult, TestRunResult, run_test_repair_loop, run_tests
+from ai_hub.devpilot.token_source import StaticTokenSource, TokenSource  # noqa: TCH001
 from ai_hub.devpilot.tools import ToolPolicy
 from ai_hub.devpilot.trigger import IssueSnapshot, check_trigger_preconditions, triage_issue
 from ai_hub.devpilot.workspace import (
@@ -110,8 +111,11 @@ class DevPilotSettings:
     issue_number: int
     workspace: Path
     execution_id: str
-    git_token: str
     artifacts_dir: Path
+    # A fixed personal access token (single owner / sandbox) ...
+    git_token: str = ""
+    # ... or any token source, e.g. GitHub App installation tokens minted by the dashboard.
+    token_source: TokenSource | None = None
     config_path: Path | None = None
     workflow_run_id: int = 0
     run_url: str | None = None
@@ -193,7 +197,7 @@ class DevPilotRunner:
         self.llm = llm
         self.dashboard = dashboard
         self.owner, _, self.repo_name = settings.repo.partition("/")
-        self.git_env = git_auth_env(settings.git_token, server_url=settings.server_url)
+        self.tokens: TokenSource = settings.token_source or StaticTokenSource(settings.git_token)
 
         self.config: HubConfig | None = None
         self.config_version = ""
@@ -246,6 +250,10 @@ class DevPilotRunner:
         return outcome
 
     # ── helpers ───────────────────────────────────────────────
+
+    def _git_env(self) -> dict[str, str]:
+        """Git auth for *this* call: tokens from a source can expire, so never cache the value."""
+        return git_auth_env(self.tokens.token(), server_url=self.s.server_url)
 
     def _step(self, text: str) -> None:
         logger.info("[devpilot] %s", text)
@@ -345,11 +353,18 @@ class DevPilotRunner:
         self.issue = self._fetch_issue()
         self.issue_hash = self.issue.body_hash
 
-        user = self.gh.get_authenticated_user()
-        login = str(user.get("login", ""))
-        self._bot_identity = (login, f"{user.get('id', 0)}+{login}@users.noreply.github.com")
-        permission = self.gh.get_collaborator_permission(login)
-        bot_ok = permission in ("admin", "write")
+        identity = self.tokens.identity()
+        if identity is not None:
+            # GitHub App: the dashboard only issues a token when the App is installed on this
+            # repository, and the token is limited to it, so access is already established.
+            self._bot_identity = (identity.login, identity.email)
+            bot_ok = True
+        else:
+            user = self.gh.get_authenticated_user()
+            login = str(user.get("login", ""))
+            self._bot_identity = (login, f"{user.get('id', 0)}+{login}@users.noreply.github.com")
+            permission = self.gh.get_collaborator_permission(login)
+            bot_ok = permission in ("admin", "write")
 
         registered, dashboard_ok, dashboard_enabled = True, True, True
         devpilot_cfg = self.config.devpilot
@@ -483,7 +498,7 @@ class DevPilotRunner:
             clone_repo(
                 f"{self.s.server_url.rstrip('/')}/{self.s.repo}.git",
                 ws,
-                token=self.s.git_token,
+                token=self.tokens.token(),
                 base_branch=self.base_branch,
                 server_url=self.s.server_url,
             )
@@ -495,7 +510,7 @@ class DevPilotRunner:
                 FailureReason.DIRTY_WORKSPACE,
                 "Workspace has uncommitted changes that DevPilot did not produce",
             )
-        self.base_sha = checkout_base(ws, self.base_branch, env=self.git_env)
+        self.base_sha = checkout_base(ws, self.base_branch, env=self._git_env())
 
         if is_empty_repo(ws):
             raise self._stop(
@@ -777,7 +792,7 @@ class DevPilotRunner:
         if current_base != self.base_sha:
             self._step("Base branch moved; rebasing")
             if not rebase_on_base(
-                ws, self.base_branch, env=self.git_env, identity=self._bot_identity
+                ws, self.base_branch, env=self._git_env(), identity=self._bot_identity
             ):
                 raise self._stop(
                     ExecutionStatus.FAILED,
@@ -830,7 +845,7 @@ class DevPilotRunner:
         assert self.issue is not None and self.branch is not None
         ws = self.s.workspace
         self._step("Pushing branch")
-        push_branch(ws, self.branch, env=self.git_env)
+        push_branch(ws, self.branch, env=self._git_env())
         self.pushed = True
 
         title = f"DevPilot: {self.issue.title.strip()}"[:100]
