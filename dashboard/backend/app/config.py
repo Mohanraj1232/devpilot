@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     # Login of the DevPilot bot account (checked when verifying a repository's setup).
     bot_login: str = ""
+    # GitHub App used by DevPilot to act on repositories (preferred over a bot user + PAT).
+    # The private key never leaves this server; runs ask the dashboard for short-lived tokens.
+    github_app_id: str = ""
+    github_app_slug: str = ""
+    github_app_private_key: str = ""  # PEM; "\n" escapes are accepted
+    github_app_private_key_path: str = ""  # alternative to the value above
     # Shared secret for GitHub webhooks (X-Hub-Signature-256). Empty = webhooks are refused.
     webhook_secret: str = ""
     cors_origins: list[str] = ["http://localhost:5173"]

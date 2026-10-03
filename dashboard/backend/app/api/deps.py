@@ -12,8 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.database import get_db
+from app.github_app import GitHubApp
 from app.github_client import GitHubUserClient
 from app.models.tables import IngestToken, Repository, User
+
+
+def get_github_app() -> GitHubApp | None:
+    """The configured GitHub App, or None. Overridden in tests."""
+    return GitHubApp.from_settings(Settings())
 
 
 def require_user(request: Request, db: Session = Depends(get_db)) -> User:

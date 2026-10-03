@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import ensure_token_repo, get_ingest_token
+from app.api.deps import ensure_token_repo, get_github_app, get_ingest_token
+from app.github_app import GitHubApp, GitHubAppError
 from app.database import get_db
 from app.models.tables import (
+    AuditLog,
     CheckResult,
     DevPilotExecution,
     Finding,
@@ -21,6 +23,8 @@ from app.models.tables import (
 from app.schemas.ingest import (
     ExecutionIngest,
     ExecutionUpdate,
+    InstallationTokenRequest,
+    InstallationTokenResponse,
     LockRequest,
     LockResponse,
     ReviewRunIngest,
@@ -265,3 +269,50 @@ def release_lock(
         execution.lock_key = None
         db.commit()
     return {"released": True}
+
+
+@router.post("/installation-token", response_model=InstallationTokenResponse)
+def issue_installation_token(
+    body: InstallationTokenRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+    token: IngestToken = Depends(get_ingest_token),
+    app: GitHubApp | None = Depends(get_github_app),
+) -> InstallationTokenResponse:
+    """A one-hour GitHub token for exactly one repository, for a DevPilot run.
+
+    The caller proves which repository it is with its per-repository ingest token. The token
+    returned is limited to that repository and to contents/pull requests/issues (no workflows,
+    no administration), so a leaked token has a small blast radius and expires quickly.
+    """
+    repo = _get_repo_by_name(db, body.repo_full_name)
+    ensure_token_repo(token, repo.id)
+    if not repo.devpilot_enabled:
+        raise HTTPException(status_code=403, detail="DevPilot is disabled for this repository")
+    if app is None:
+        raise HTTPException(status_code=503, detail="The GitHub App is not configured")
+
+    try:
+        minted = app.mint_repo_token(repo.full_name)
+        bot_user_id = app.bot_user_id()
+    except GitHubAppError as exc:
+        # Our own messages are written for operators and contain no secrets.
+        status = 409 if exc.status_code == 404 else 502
+        raise HTTPException(status_code=status, detail=exc.message) from exc
+
+    db.add(
+        AuditLog(
+            actor=f"ingest-token:{token.id}",
+            action="installation_token_issued",
+            target=repo.full_name,
+            details={"expires_at": minted.expires_at, "permissions": minted.permissions},
+        )
+    )
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return InstallationTokenResponse(
+        token=minted.token,
+        expires_at=minted.expires_at,
+        bot_login=app.bot_login,
+        bot_user_id=bot_user_id,
+    )

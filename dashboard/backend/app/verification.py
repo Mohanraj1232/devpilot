@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.github_app import GitHubApp, GitHubAppError, installation_problems
 from app.github_client import GitHubUserClient
 
 GATE_CHECK = "AI Hub / Quality Gate"
@@ -66,20 +67,54 @@ def evaluate_branch_protection(
     return problems
 
 
+def _check_identity(
+    gh: GitHubUserClient,
+    full_name: str,
+    bot_login: str,
+    github_app: GitHubApp | None,
+    messages: list[str],
+) -> bool:
+    """Can DevPilot act on this repository? Via the GitHub App if configured, else a bot user."""
+    if github_app is not None:
+        try:
+            installation = github_app.installation_for_repo(full_name)
+        except GitHubAppError as exc:
+            messages.append(f"Could not check the GitHub App installation: {exc.message}")
+            return False
+        if installation is None:
+            messages.append(
+                f"Install the GitHub App '{github_app.slug}' on this repository "
+                "(GitHub → Settings → GitHub Apps)"
+            )
+            return False
+        problems = installation_problems(installation)
+        messages.extend(problems)
+        return not problems
+
+    if not bot_login:
+        messages.append(
+            "Neither a GitHub App nor DEVPILOT_BOT_LOGIN is configured on the dashboard, "
+            "so DevPilot's access cannot be checked"
+        )
+        return False
+    permission = gh.collaborator_permission(full_name, bot_login)
+    if permission in ("write", "admin"):
+        return True
+    messages.append(f"Add '{bot_login}' as a collaborator with Write access")
+    return False
+
+
 def verify_repository(
-    gh: GitHubUserClient, full_name: str, default_branch: str, bot_login: str
+    gh: GitHubUserClient,
+    full_name: str,
+    default_branch: str,
+    bot_login: str,
+    github_app: GitHubApp | None = None,
 ) -> dict[str, Any]:
     """Run every setup check and explain each failure."""
     messages: list[str] = []
 
-    bot_ok = False
-    if not bot_login:
-        messages.append("The dashboard has no DEVPILOT_BOT_LOGIN configured, so the bot cannot be checked")
-    else:
-        permission = gh.collaborator_permission(full_name, bot_login)
-        bot_ok = permission in ("write", "admin")
-        if not bot_ok:
-            messages.append(f"Add '{bot_login}' as a collaborator with Write access")
+    bot_ok = _check_identity(gh, full_name, bot_login, github_app, messages)
 
     missing = [w for w in REQUIRED_WORKFLOWS if not gh.file_exists(full_name, w, default_branch)]
     workflows_ok = not missing

@@ -30,6 +30,12 @@ services:
       # Set to "development" only for local use over plain HTTP (the login cookie is otherwise Secure).
       DEVPILOT_ENVIRONMENT: ${DEVPILOT_ENVIRONMENT:-production}
       DEVPILOT_BOT_LOGIN: ${DEVPILOT_BOT_LOGIN:-}
+      # The GitHub App DevPilot acts as. The private key stays on this server: either pass the PEM
+      # (with "\n" escapes) in DEVPILOT_GITHUB_APP_PRIVATE_KEY, or mount a file and set the path.
+      DEVPILOT_GITHUB_APP_ID: ${DEVPILOT_GITHUB_APP_ID:-}
+      DEVPILOT_GITHUB_APP_SLUG: ${DEVPILOT_GITHUB_APP_SLUG:-}
+      DEVPILOT_GITHUB_APP_PRIVATE_KEY: ${DEVPILOT_GITHUB_APP_PRIVATE_KEY:-}
+      DEVPILOT_GITHUB_APP_PRIVATE_KEY_PATH: ${DEVPILOT_GITHUB_APP_PRIVATE_KEY_PATH:-}
       # Shared secret configured on the GitHub webhook; empty means webhooks are refused.
       DEVPILOT_WEBHOOK_SECRET: ${DEVPILOT_WEBHOOK_SECRET:-}
     depends_on:

@@ -77,6 +77,17 @@ class LockRequest(BaseModel):
     execution_id: str
 
 
+class InstallationTokenRequest(BaseModel):
+    repo_full_name: str
+
+
+class InstallationTokenResponse(BaseModel):
+    token: str
+    expires_at: str
+    bot_login: str
+    bot_user_id: int
+
+
 class LockResponse(BaseModel):
     lock_key: str
     acquired: bool

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import (
     get_github,
+    get_github_app,
     get_visible_repo,
     hash_ingest_token,
     require_repo_admin,
@@ -21,6 +22,7 @@ from app.api.deps import (
 )
 from app.config import Settings
 from app.database import get_db
+from app.github_app import GitHubApp
 from app.github_client import GitHubUserClient
 from app.models.tables import IngestToken, Repository, User
 from app.schemas.repos import RepoCreate, RepoResponse, RepoUpdate, RepoVerification
@@ -153,6 +155,7 @@ def verify_repo(
     request: Request,
     db: Session = Depends(get_db),
     gh: GitHubUserClient = Depends(get_github),
+    github_app: GitHubApp | None = Depends(get_github_app),
 ) -> RepoVerification:
     """Check, live against GitHub, that the bot, workflows and branch protection are in place."""
     _get_current_user_id(request)
@@ -163,6 +166,7 @@ def verify_repo(
         repo.full_name,
         str(github_repo.get("default_branch") or "main"),
         Settings().bot_login,
+        github_app,
     )
     return RepoVerification(**result)
 
