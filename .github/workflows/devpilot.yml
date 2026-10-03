@@ -17,15 +17,18 @@ on:
         required: false
         type: string
         default: "v1"
+    # Two ways to authenticate (see docs/setup.md). The GitHub App is preferred: nothing
+    # long-lived is stored here, the dashboard hands each run a one-hour token for this
+    # repository only. A personal access token is the fallback for a single owner or a sandbox.
     secrets:
-      DEVPILOT_BOT_TOKEN:
-        description: "Fine-grained PAT of the DevPilot bot (contents, pull requests, issues: write)"
-        required: true
       DASHBOARD_URL:
-        description: "Base URL of the DevPilot dashboard"
+        description: "Base URL of the DevPilot dashboard (GitHub App mode)"
         required: false
       DASHBOARD_TOKEN:
-        description: "Ingest token for this repository"
+        description: "Ingest token for this repository (GitHub App mode)"
+        required: false
+      DEVPILOT_BOT_TOKEN:
+        description: "Optional personal access token; if set it is used instead of the GitHub App"
         required: false
 
 # One execution per issue at a time. Later runs queue instead of cancelling a run in progress.
@@ -33,7 +36,8 @@ concurrency:
   group: devpilot-${{ github.repository }}-${{ inputs.issue_number }}
   cancel-in-progress: false
 
-# The bot PAT performs all repository writes, so the workflow token needs no write access.
+# DevPilot's own token (App token or PAT) performs all repository writes, so the workflow
+# token needs no write access.
 permissions:
   contents: read
   id-token: write
@@ -46,7 +50,8 @@ jobs:
       - name: Check out the target repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+          # The default read-only workflow token is enough to read the repository; DevPilot
+          # fetches and pushes with its own token, injected only for those git commands.
           fetch-depth: 0
           # Credentials must not be written to .git/config where repository code could read them.
           persist-credentials: false

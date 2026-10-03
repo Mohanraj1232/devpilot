@@ -9,8 +9,11 @@ jobs:
     if: github.event.label.name == 'devpilot'
     uses: Mohanraj1232/devpilot/.github/workflows/devpilot.yml@v1
     secrets:
-      DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
+      # GitHub App mode (recommended): only these two secrets are needed.
       DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
       DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
+      # Personal-access-token mode (single owner / sandbox). Leave this secret undefined to use
+      # the GitHub App; if it is defined it takes precedence.
+      DEVPILOT_BOT_TOKEN: ${{ secrets.DEVPILOT_BOT_TOKEN }}
     with:
       issue_number: ${{ github.event.issue.number }}

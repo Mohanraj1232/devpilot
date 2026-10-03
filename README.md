@@ -7,7 +7,9 @@ A GitHub-integrated platform with two capabilities, built around reusable GitHub
    Bedrock, risk/quality scoring, and a configurable quality gate reported on the PR.
 2. **DevPilot.** Label an issue `devpilot` and a Claude-powered agent implements it on a feature
    branch, runs the tests (with a limited number of repair attempts), and opens a pull request through
-   a dedicated bot account. The result is reviewed by the pipeline above and approved by a human.
+   a GitHub App (one App serves every owner; each just installs it on their repositories, and no
+   long-lived credential is stored in them). The result is reviewed by the pipeline above and
+   approved by a human.
 
 Nothing is merged automatically: `main` stays protected and a person approves every change.
 

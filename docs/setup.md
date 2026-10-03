@@ -14,7 +14,7 @@ permissions, branch protection). The code expects exactly the names used below.
 |---|---|---|
 | **Central AI Hub** (this repo) | Reusable workflows `ai-review.yml` and `devpilot.yml`, plus the `ai-hub` CLI | GitHub Actions |
 | **PR review** | Static + security analysis, tests/coverage, AI review, quality gate, PR report | `pull_request` in each target repo |
-| **DevPilot** | Claude (Bedrock) implements a labelled issue and opens a PR as a bot | `issues: labeled` in each target repo |
+| **DevPilot** | Claude (Bedrock) implements a labelled issue and opens a PR as a GitHub App | `issues: labeled` in each target repo |
 | **Dashboard** | Registration, settings, monitoring (FastAPI + React + MySQL) | Your server / Docker |
 
 Nothing is ever merged automatically. Branch protection plus a human approval is the last gate.
@@ -35,23 +35,56 @@ release. Until `v1` exists, every call to `…/ai-review.yml@v1` or `…/devpilo
 checkout. The hub repository must be **public** (or you must change the checkout steps to use
 a token that can read it).
 
-## 2. The DevPilot bot account
+## 2. The GitHub App (DevPilot's identity on GitHub)
 
-DevPilot acts on GitHub as a dedicated user so its actions are attributable and its
-permissions are minimal. Claude is the "brain"; this account is the identity.
+DevPilot acts on GitHub as a **GitHub App**, so its actions are attributable (commits and PRs
+show as `your-app[bot]`) and its permissions are minimal. Claude is the "brain"; the App is the
+identity.
 
-1. Create a GitHub user (for example `devpilot-bot`).
-2. For each target repository, invite it as a **collaborator with Write** access.
-3. As the bot, create a **fine-grained personal access token**:
-   - Repository access: *Only select repositories* (the targets).
-   - Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**,
-     **Issues: Read and write**, Metadata: Read-only (automatic).
-   - Do **not** grant Workflows or Administration.
-   - Set an expiry and put a reminder in your calendar to rotate it.
-4. Store it in each target repo as the Actions secret **`DEVPILOT_BOT_TOKEN`**.
+**One App serves every owner.** You, the platform operator, create it once. Each repository owner
+just *installs* it and picks which repositories it may touch; they never create a bot account and
+never receive a long-lived secret.
 
-The bot cannot push to `main` once branch protection is on (section 6). Because PRs are
-authored with a PAT (not `GITHUB_TOKEN`), they trigger the AI-review workflow normally.
+### How tokens work (and why the private key stays on the dashboard)
+
+An App's private key can mint tokens for **every** installation, so it must never be stored in
+target repositories. It lives only on the dashboard server. When DevPilot runs, it asks the
+dashboard for a token, proving which repository it is with that repository's `DASHBOARD_TOKEN`.
+The dashboard returns a **one-hour token limited to that single repository** and to the
+permissions below. Nothing long-lived is shared, and a leaked token expires on its own.
+
+### One-time setup by the operator
+
+1. GitHub → *Settings → Developer settings → GitHub Apps → New GitHub App*.
+   - Name it (for example `DevPilot`); the homepage URL can be your dashboard.
+   - **Webhook:** untick *Active* (not needed).
+   - **Repository permissions:** *Contents*: Read and write, *Issues*: Read and write,
+     *Pull requests*: Read and write, *Metadata*: Read-only. **Nothing else.** In particular do **not**
+     grant *Workflows* or *Administration* (the dashboard's Verify flags them if you do).
+   - **Where can this app be installed?** *Any account* if other people will use it, otherwise
+     *Only on this account*.
+2. Note the **App ID** and the **slug** (the last part of `github.com/apps/<slug>`).
+3. *Generate a private key* (downloads a `.pem`). Keep it on the dashboard server only and give the
+   dashboard these settings (section 4): `DEVPILOT_GITHUB_APP_ID`, `DEVPILOT_GITHUB_APP_SLUG`, and
+   either `DEVPILOT_GITHUB_APP_PRIVATE_KEY_PATH` (mount the file; recommended) or
+   `DEVPILOT_GITHUB_APP_PRIVATE_KEY` (the PEM with `\n` escapes).
+
+### Per repository, by its owner
+
+4. Open `https://github.com/apps/<slug>` → *Install* → choose the account and **only the repositories**
+   that should use DevPilot.
+
+That is all. The App needs no collaborator invite, and it cannot push to a protected `main`: it has no
+admin rights and must not be on any bypass list. Because the App's token is not the workflow's
+`GITHUB_TOKEN`, the pull requests it opens trigger the AI-review workflow normally.
+
+### Alternative: a personal access token (single owner or sandbox)
+
+If everything is yours, you can skip the App: create a bot user, invite it with Write access, create a
+fine-grained token (Contents, Pull requests, Issues: read/write; no Workflows or Administration; with an
+expiry), and store it in each repo as the secret `DEVPILOT_BOT_TOKEN`. If that secret is defined it is
+used instead of the App. It does **not** suit independent owners: the token would have to be shared, and
+a fine-grained token cannot be limited to repositories owned by other people.
 
 ## 3. AWS: Amazon Bedrock access without stored keys
 
@@ -109,12 +142,14 @@ cd dashboard
 export DEVPILOT_SECRET_KEY=$(openssl rand -hex 32)   # required; the app refuses the placeholder
 export DEVPILOT_GITHUB_CLIENT_ID=...                 # from step 2 below
 export DEVPILOT_GITHUB_CLIENT_SECRET=...
-export DEVPILOT_BOT_LOGIN=devpilot-bot
+export DEVPILOT_GITHUB_APP_ID=...                    # from section 2
+export DEVPILOT_GITHUB_APP_SLUG=devpilot
+export DEVPILOT_GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/devpilot-app.pem   # mount the .pem here
 export DEVPILOT_WEBHOOK_SECRET=$(openssl rand -hex 32)
 docker compose up --build
 ```
 
-Compose runs `alembic upgrade head` before starting the API (backend on `:8000`, UI on `:5173`).
+(`DEVPILOT_BOT_LOGIN` is only for the personal-access-token alternative.) Compose runs `alembic upgrade head` before starting the API (backend on `:8000`, UI on `:5173`).
 Change the MySQL passwords in `docker-compose.yml` before exposing it anywhere.
 
 1. **MySQL** is created by compose. The initial migration has been verified on SQLite only;
@@ -133,15 +168,18 @@ Change the MySQL passwords in `docker-compose.yml` before exposing it anywhere.
 
 Log in, register the repository, then:
 
-1. **Verify** — checks, live against GitHub, that the bot has Write access, both workflow files
+1. **Verify** — checks, live against GitHub, that the GitHub App is installed on the repository with the
+   right permissions (and flags *Workflows*/*Administration* if they were granted), both workflow files
    exist, and the default branch is protected as required (section 6). It tells you what to fix.
 2. **Enable DevPilot** — it is *off by default*; the review pipeline is on.
 3. **Issue a token** — shown once; revokes the previous one. Store it in the target repo as
-   **`DASHBOARD_TOKEN`**, and the dashboard's base URL as **`DASHBOARD_URL`**.
+   **`DASHBOARD_TOKEN`**, and the dashboard's base URL as **`DASHBOARD_URL`**. This token is also how a
+   run requests its GitHub token, so treat it like a deploy key: whoever holds it can obtain write
+   access to *that one repository* while DevPilot is enabled for it. Rotate it with the same button.
 
 You need **admin rights on the GitHub repository** to register or manage it, and you only see
-repositories you registered. DevPilot refuses to run for unregistered or disabled repositories and
-**fails closed if the dashboard is unreachable**. (PR review keeps working without the dashboard.)
+repositories you registered. DevPilot refuses to run for unregistered or disabled repositories (the dashboard will not issue it a
+token) and **fails closed if the dashboard is unreachable**. (PR review keeps working without the dashboard.)
 
 ## 5. Onboard a target repository
 
@@ -153,7 +191,9 @@ Copy from [`templates/target-repo/`](../templates/target-repo):
 .ai-review/config.yml             # per-repository rules
 ```
 
-Then create the secrets/variables from sections 2–4 and add the `devpilot` label to the repository.
+Then: install the GitHub App on the repository (section 2), add the Actions **secrets** `DASHBOARD_URL`
+and `DASHBOARD_TOKEN` (section 4) and the **variables** from section 3, and add the `devpilot` label to the
+repository. No GitHub credential is stored in the repository.
 
 `.ai-review/config.yml` is validated strictly: unknown keys, unknown tool names, invalid
 severities and out-of-range values are errors, never silently ignored. Important behaviours:
@@ -193,7 +233,7 @@ from changing `main`:
    issue that already has a DevPilot PR (nothing happens); disable DevPilot in the dashboard (no run);
    label a vague issue (it asks for clarification).
 
-You can also run pieces locally. For DevPilot against a sandbox repo, without a dashboard:
+You can also run pieces locally. For DevPilot against a sandbox repo, without a dashboard (this uses a personal access token):
 
 ```bash
 pip install -e hub
@@ -211,13 +251,18 @@ ai-hub devpilot --repo OWNER/REPO --issue 1 --workspace ./checkout --standalone
   `devpilot` label (it removes the label when it asks for more detail).
 - **Artifacts** (`devpilot-issue-N`, `review-outcome`) hold the result, a redacted agent transcript
   and the diff, kept 14 days.
-- **Rotate secrets:** the bot PAT (expiry), the dashboard ingest token (dashboard button), the webhook
-  secret, and the OAuth client secret.
+- **Rotate secrets:** the App's private key (generate a new one in the App settings, deploy it to the
+  dashboard, then delete the old one), the dashboard ingest token (dashboard button), the webhook secret,
+  and the OAuth client secret. GitHub tokens for runs are issued per run and need no rotation.
 
 ## Security model and known limits
 
 - **Human approval is required.** DevPilot only opens pull requests; it never merges, and cannot
   push to a protected `main`.
+- **No long-lived GitHub credential in target repositories.** The App's private key stays on the
+  dashboard; a run gets a one-hour token for its own repository with only contents, pull requests and
+  issues access (no workflows, no administration), requested with the repository's ingest token. Every
+  issue of a token is audit-logged (never the token itself).
 - **Untrusted input.** Issue text, repository content, test output and PR diffs are passed to the
   model as delimited *data*; the model is told not to follow instructions in them. Its tools are a
   fixed set (no shell, no network) confined to the workspace, and guardrails reject workflow,
@@ -244,6 +289,10 @@ ai-hub devpilot --repo OWNER/REPO --issue 1 --workspace ./checkout --standalone
 | Gate fails with "check 'x' is missing" | That job crashed before uploading its result; open its log |
 | Gate fails with "Coverage data unavailable" | Set `coverage_threshold: 0` or configure `tests.coverage_report` |
 | DevPilot says "Dashboard unreachable" | `DASHBOARD_URL`/`DASHBOARD_TOKEN` wrong, token revoked, or dashboard down (DevPilot fails closed) |
-| DevPilot says "Bot is not a collaborator" | Invite the bot with Write access; the PAT must belong to that user |
+| DevPilot says the GitHub App is not installed | Install the App on that repository (section 2, step 4) |
+| DevPilot says "does not grant the permissions" | The App needs Contents, Issues and Pull requests: write; update its permissions and accept the change on the installation |
+| DevPilot stops with "disabled" / "not registered" | Enable DevPilot / register the repository in the dashboard; the dashboard refuses to issue a token otherwise |
+| DevPilot says "No credential for DevPilot" | Set `DASHBOARD_URL` and `DASHBOARD_TOKEN` (App mode) or `DEVPILOT_BOT_TOKEN` (PAT mode) |
+| Dashboard returns 503 for the token request | `DEVPILOT_GITHUB_APP_ID`, `…_SLUG` or the private key is not configured |
 | Dashboard won't start | `DEVPILOT_SECRET_KEY` unset (or the placeholder) outside `DEVPILOT_ENVIRONMENT=development` |
 | Webhook returns 503 / 401 | `DEVPILOT_WEBHOOK_SECRET` unset on the dashboard / does not match the webhook's secret |
