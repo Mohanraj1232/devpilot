@@ -34,3 +34,8 @@ Thumbs.db
 
 # Test fixtures must be tracked even if they match the ignores above
 !hub/tests/fixtures/coverage.xml
+
+# Private keys (for example the GitHub App key) and local compose overrides
+*.pem
+*.key
+docker-compose.override.yml

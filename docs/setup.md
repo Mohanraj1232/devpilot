@@ -3,10 +3,11 @@
 This guide covers everything that has to be done by a person (accounts, secrets, cloud
 permissions, branch protection). The code expects exactly the names used below.
 
-> **Status.** The hub, the dashboard and both workflows are covered by automated tests and
-> `actionlint`, but they have **not yet been run against real GitHub Actions, real Amazon
-> Bedrock, or a real MySQL server**. Do the first run on a throw-away sandbox repository
-> (see [First run](#7-first-run-on-a-sandbox-repository)).
+> **Status.** The hub and the dashboard have automated tests that pass in GitHub Actions CI, and the
+> workflows pass `actionlint`. What has **not** been exercised yet is the whole thing against real
+> services: the reusable workflows on a real target repository, Amazon Bedrock, MySQL, and the GitHub
+> App talking to real GitHub (it is only tested with mocked responses). Do the first run on a
+> throw-away sandbox repository (see [First run](#7-first-run-on-a-sandbox-repository)).
 
 ## What you are setting up
 
@@ -19,21 +20,48 @@ permissions, branch protection). The code expects exactly the names used below.
 
 Nothing is ever merged automatically. Branch protection plus a human approval is the last gate.
 
+### Who does what
+
+| Role | Does |
+|---|---|
+| **Operator** (runs the platform) | Publishes the hub (1), creates the GitHub App (2), sets up AWS (3), runs the dashboard (4) |
+| **Repository owner** | Installs the App on their repositories (2), registers the repository and adds three secrets/variables (4, 5), protects `main` (6) |
+
+On a single-owner setup you are both.
+
+### Quick reference: every secret, variable and setting
+
+| Where | Name | What it is |
+|---|---|---|
+| Target repo — secret | `DASHBOARD_URL` | Base URL of your dashboard |
+| Target repo — secret | `DASHBOARD_TOKEN` | The repository's ingest token (issued by the dashboard; also how a run requests its GitHub token) |
+| Target repo — variable | `AWS_ROLE_ARN`, `AWS_REGION`, `BEDROCK_MODEL_ID` | Bedrock access via OIDC (section 3) |
+| Target repo — secret (optional) | `DEVPILOT_BOT_TOKEN` | Personal access token; **only** for the single-owner alternative, and if set it wins over the App |
+| Dashboard | `DEVPILOT_SECRET_KEY` | Signs login sessions (required) |
+| Dashboard | `DEVPILOT_GITHUB_CLIENT_ID`, `…_CLIENT_SECRET`, `…_REDIRECT_URI` | GitHub OAuth App used to log in to the dashboard |
+| Dashboard | `DEVPILOT_GITHUB_APP_ID`, `…_APP_SLUG`, `…_APP_PRIVATE_KEY_PATH` (or `…_PRIVATE_KEY`) | The GitHub App DevPilot acts as |
+| Dashboard | `DEVPILOT_WEBHOOK_SECRET` | Verifies webhook deliveries from GitHub |
+| Dashboard | `DEVPILOT_ENVIRONMENT` | `development` only for local HTTP use; anything else needs a real secret key and sends Secure cookies |
+| Dashboard | `DEVPILOT_BOT_LOGIN` | Only for the personal-access-token alternative |
+
 ---
 
 ## 1. Publish the hub and cut a release
 
-Target repositories call the hub's workflows pinned to `@v1`, so that tag must exist.
+Target repositories call the hub's workflows pinned to `@v1`, so that tag must exist, and it must
+point at a commit that contains the behaviour you want them to run.
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0          # any new vX.Y.Z
+git push origin v1.1.0
 ```
 
-`release.yml` re-runs the checks, moves the `v1` tag to the same commit and creates a GitHub
-release. Until `v1` exists, every call to `…/ai-review.yml@v1` or `…/devpilot.yml@v1` fails at
-checkout. The hub repository must be **public** (or you must change the checkout steps to use
-a token that can read it).
+`release.yml` re-runs the checks, moves the major tag (`v1`) to the same commit and creates a GitHub
+release. **Repositories only pick up hub changes when you cut a new release**; merging to `main` is not
+enough. (`v1.0.0` predates the GitHub App work, so release a new version before onboarding anyone to the
+App.) Until `v1` exists, every call to `…/ai-review.yml@v1` or `…/devpilot.yml@v1` fails at checkout.
+The hub repository must be **public** (or you must change the checkout steps to use a token that can
+read it).
 
 ## 2. The GitHub App (DevPilot's identity on GitHub)
 
@@ -57,7 +85,11 @@ permissions below. Nothing long-lived is shared, and a leaked token expires on i
 
 1. GitHub → *Settings → Developer settings → GitHub Apps → New GitHub App*.
    - Name it (for example `DevPilot`); the homepage URL can be your dashboard.
-   - **Webhook:** untick *Active* (not needed).
+   - **Webhook:** tick *Active*, URL `https://YOUR_DASHBOARD/api/v1/webhooks/github`, and set a
+     **secret** (the same value you give the dashboard as `DEVPILOT_WEBHOOK_SECRET`). One webhook on the
+     App delivers events for every installed repository, so repository owners never configure webhooks
+     and never see this secret.
+   - **Subscribe to events:** *Issues* and *Pull request*.
    - **Repository permissions:** *Contents*: Read and write, *Issues*: Read and write,
      *Pull requests*: Read and write, *Metadata*: Read-only. **Nothing else.** In particular do **not**
      grant *Workflows* or *Administration* (the dashboard's Verify flags them if you do).
@@ -149,17 +181,30 @@ export DEVPILOT_WEBHOOK_SECRET=$(openssl rand -hex 32)
 docker compose up --build
 ```
 
-(`DEVPILOT_BOT_LOGIN` is only for the personal-access-token alternative.) Compose runs `alembic upgrade head` before starting the API (backend on `:8000`, UI on `:5173`).
+Compose runs `alembic upgrade head` before starting the API (backend on `:8000`, UI on `:5173`).
 Change the MySQL passwords in `docker-compose.yml` before exposing it anywhere.
+
+Compose does not mount the App's private key for you. Add a `dashboard/docker-compose.override.yml` next to
+the compose file (keep the key itself out of git):
+
+```yaml
+services:
+  backend:
+    volumes:
+      - ./devpilot-app.pem:/run/secrets/devpilot-app.pem:ro
+```
+
+Alternatively pass the PEM, with `\n` for line breaks, as `DEVPILOT_GITHUB_APP_PRIVATE_KEY`.
 
 1. **MySQL** is created by compose. The initial migration has been verified on SQLite only;
    check the first start against MySQL.
 2. **GitHub OAuth App** (Settings → Developer settings → OAuth Apps): callback URL
    `http://localhost:8000/api/v1/auth/callback` (or your public URL; also set
    `DEVPILOT_GITHUB_REDIRECT_URI`). Its client ID/secret go in the variables above.
-3. **Webhook** on each target repo: payload URL `https://YOUR_DASHBOARD/api/v1/webhooks/github`,
-   content type `application/json`, secret = `DEVPILOT_WEBHOOK_SECRET`, events *Pull requests*
-   and *Issues*. Without the secret the endpoint refuses everything (by design).
+3. **Webhook.** It is configured once, on the GitHub App (section 2), with `DEVPILOT_WEBHOOK_SECRET`. Without
+   the secret the endpoint refuses everything (by design). (In the personal-access-token alternative there
+   is no App, so add a webhook to each repository instead: the same URL, content type `application/json`,
+   events *Issues* and *Pull requests*, and the secret.)
 4. Put the dashboard behind HTTPS. The login cookie is marked `Secure` and `SameSite=Lax`; for local
    development over plain HTTP set `DEVPILOT_ENVIRONMENT=development` (which also allows the placeholder
    secret key). The user's GitHub token lives only in that signed cookie, never in the database.
@@ -210,13 +255,13 @@ severities and out-of-range values are errors, never silently ignored. Important
 
 ## 6. Protect `main`
 
-Branch protection (or a ruleset) on the default branch is what actually stops the bot, and the AI,
+Branch protection (or a ruleset) on the default branch is what actually stops DevPilot, and the AI,
 from changing `main`:
 
 - Require a pull request before merging, with **at least 1 approving review**.
 - Require the status check **`AI Hub / Quality Gate`**.
 - Block force pushes and branch deletion.
-- Do **not** add the bot to any bypass list; do not give it admin.
+- Do **not** add the GitHub App (or the bot user) to any bypass list; do not give it admin.
 - Recommended: dismiss stale approvals when new commits are pushed.
 
 (The dashboard's **Verify** button checks the first four.)
@@ -227,8 +272,9 @@ from changing `main`:
    comment, an inline comment, the `AI Hub / Quality Gate` check **failing**, and an entry in the dashboard.
 2. Fix it; push; expect the gate to pass. Merging still needs a human approval.
 3. **DevPilot:** create an issue with a concrete description and add the `devpilot` label. Expect a
-   "started" comment, a branch `devpilot/issue-N-…`, a PR from the bot that goes through step 1,
-   and a final comment on the issue.
+   "started" comment, a branch `devpilot/issue-N-…`, a PR authored by `your-app[bot]` that goes through step 1,
+   and a final comment on the issue. In the dashboard's audit log you will see the token issue.
+   Before this, the dashboard's **Verify** should be all green.
 4. **Negative checks:** edit the issue while it runs (the run stops and says so); add the label to an
    issue that already has a DevPilot PR (nothing happens); disable DevPilot in the dashboard (no run);
    label a vague issue (it asks for clarification).
@@ -249,6 +295,8 @@ ai-hub devpilot --repo OWNER/REPO --issue 1 --workspace ./checkout --standalone
   which blocks new runs. Remove the label and re-apply `devpilot`.
 - **Re-running DevPilot** after it asked for clarification: update the issue, then re-apply the
   `devpilot` label (it removes the label when it asks for more detail).
+- **Changing the hub:** merge to `main`, then cut a new release (section 1). Repositories pinned to `@v1`
+  only see the change after the major tag moves.
 - **Artifacts** (`devpilot-issue-N`, `review-outcome`) hold the result, a redacted agent transcript
   and the diff, kept 14 days.
 - **Rotate secrets:** the App's private key (generate a new one in the App settings, deploy it to the
@@ -274,7 +322,7 @@ ai-hub devpilot --repo OWNER/REPO --issue 1 --workspace ./checkout --standalone
 - **Forks and Dependabot** cannot receive AWS credentials: AI review is recorded as *skipped* for them,
   and results go to the job summary because their token is read-only.
 - **The dashboard** authenticates workflows with a per-repository token and users via GitHub OAuth.
-  Webhooks are verified with an HMAC secret. Every route that exposes or changes data requires a login
+  Webhooks come from the App and are verified with an HMAC secret that only you hold. Every route that exposes or changes data requires a login
   or a token and is scoped to the caller's repositories. Not implemented: rate limiting and CSRF tokens
   (the session cookie is `SameSite=Lax` instead), so put the dashboard behind HTTPS and, ideally, a
   trusted network or an authenticating proxy.
@@ -295,4 +343,6 @@ ai-hub devpilot --repo OWNER/REPO --issue 1 --workspace ./checkout --standalone
 | DevPilot says "No credential for DevPilot" | Set `DASHBOARD_URL` and `DASHBOARD_TOKEN` (App mode) or `DEVPILOT_BOT_TOKEN` (PAT mode) |
 | Dashboard returns 503 for the token request | `DEVPILOT_GITHUB_APP_ID`, `…_SLUG` or the private key is not configured |
 | Dashboard won't start | `DEVPILOT_SECRET_KEY` unset (or the placeholder) outside `DEVPILOT_ENVIRONMENT=development` |
+| Webhook deliveries fail in the App's *Advanced* tab | Wrong URL, or the App's webhook secret differs from `DEVPILOT_WEBHOOK_SECRET` (401); secret unset on the dashboard (503) |
+| Repositories do not see a hub change | A new release has not been cut; they run the code the `v1` tag points at (section 1) |
 | Webhook returns 503 / 401 | `DEVPILOT_WEBHOOK_SECRET` unset on the dashboard / does not match the webhook's secret |
